@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+_logs/
+.vscode/
+.idea/
+# reports contain your own file paths, keep them out of git
+*.txt
+!requirements.txt
