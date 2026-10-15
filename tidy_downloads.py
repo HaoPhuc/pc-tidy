@@ -35,7 +35,7 @@ RENAME_WITH_LLM = True      # let the LLM give LLM-sorted files a clearer name
 
 # extension -> folder. Anything not listed here is sent to the LLM.
 RULES = {
-    # installers (review this folder, then delete)
+    # installers (cleanup.ps1 deletes them, setting: Installers)
     ".exe": "To-Delete", ".msi": "To-Delete", ".msix": "To-Delete",
     # images
     ".jpg": "Pictures", ".jpeg": "Pictures", ".png": "Pictures", ".gif": "Pictures",
