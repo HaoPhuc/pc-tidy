@@ -18,7 +18,7 @@ $PipCache       = $true    # pip download cache
 $UvCache        = $true    # uv download cache
 $GpuShaderCache = $true    # NVIDIA / AMD / DirectX shader caches. They rebuild themselves
 $TempFiles      = $true    # your Temp folder and C:\Windows\Temp. Files in use are skipped
-$RecycleBin     = $true    # empty the Recycle Bin on C:
+$RecycleBin     = $true    # empty the Recycle Bin on every drive
 $CrashDumps     = $true    # crash dump files (*.dmp) left by Windows and apps
 $Hibernation    = $false   # turn off hibernation (and Fast Startup). Frees C:\hiberfil.sys
 $Installers     = $true    # installer files (.exe .msi .msix ...) in the folders below.
@@ -26,7 +26,7 @@ $Installers     = $true    # installer files (.exe .msi .msix ...) in the folder
                            # its .exe would be deleted too.
 
 # Folders to delete installers from (top level only, subfolders are left alone).
-# Sorted\To-Delete is where tidy_downloads.py puts installers.
+# Sorted\To-Delete is where tidy_folder.py puts installers.
 $InstallerFolders = @("$env:USERPROFILE\Downloads", "$env:USERPROFILE\Sorted\To-Delete")
 
 # conda environments to delete, e.g. @("old-env", "test")
@@ -52,9 +52,16 @@ if (-not $isAdmin) {
 $script:Estimate = 0.0
 $Drive = $env:SystemDrive   # usually C:
 
+function Get-FixedDrives {
+    try   { @((Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction Stop).DeviceID) }
+    catch { @($Drive) }
+}
+$Drives = Get-FixedDrives   # e.g. C:, E:
+
 function Write-Step([string]$Text) { Write-Host "`n== $Text" -ForegroundColor Cyan }
 function Gb($Bytes) { "{0:N1} GB" -f ($Bytes / 1GB) }
-function Get-FreeBytes { (Get-PSDrive $Drive.TrimEnd(':')).Free }
+function Get-FreeBytes([string]$D) { (Get-PSDrive $D.TrimEnd(':')).Free }
+function Get-FreeMap { $m = [ordered]@{}; foreach ($d in $Drives) { $m[$d] = Get-FreeBytes $d }; $m }
 
 function Get-SizeBytes([string[]]$Paths) {
     $total = 0.0
@@ -87,7 +94,7 @@ function Remove-Paths([string]$Label, [string[]]$Paths) {
 }
 
 # Folders that ExtraPathsToDelete may never point at, to protect against typos
-$Protected = @("$Drive\", $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
+$Protected = @($Drives | ForEach-Object { "$_\" }) + @("$Drive\", $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
                "$Drive\Users", $env:USERPROFILE, "$env:USERPROFILE\Documents", "$env:USERPROFILE\Desktop") |
     Where-Object { $_ } | ForEach-Object { $_.Replace('/', '\').TrimEnd('\').ToLower() }
 
@@ -126,7 +133,7 @@ if (-not $DryRun -and (Read-Host "`nType yes to continue") -ne "yes") {
     Write-Host "Cancelled, nothing changed."
     exit
 }
-$before = Get-FreeBytes
+$before = Get-FreeMap
 
 
 # ---------- conda ----------
@@ -179,12 +186,12 @@ if ($CrashDumps) {
         "$env:LOCALAPPDATA\CrashDumps\*.dmp")
 }
 if ($RecycleBin) {
-    Write-Step "Recycle Bin"
-    $size = Get-SizeBytes @("$Drive\`$Recycle.Bin")
+    Write-Step "Recycle Bin on $($Drives -join ', ')"
+    $size = Get-SizeBytes @($Drives | ForEach-Object { "$_\`$Recycle.Bin" })
     $script:Estimate += $size
     if ($DryRun) { Write-Host "  would free about $(Gb $size)" }
     else {
-        Clear-RecycleBin -DriveLetter $Drive.TrimEnd(':') -Force -ErrorAction SilentlyContinue
+        Clear-RecycleBin -Force -ErrorAction SilentlyContinue   # every drive
         Write-Host "  emptied"
     }
 }
@@ -271,7 +278,10 @@ if ($DryRun) {
     Write-Host "`nDry run done. About $(Gb $script:Estimate) would be freed, plus what conda clean and the uninstalls free." -ForegroundColor Green
     Write-Host "Run .\cleanup.ps1 without -DryRun to do it."
 } else {
-    $after = Get-FreeBytes
-    Write-Host "`nDone. Free space on ${Drive}: $(Gb $before) -> $(Gb $after) (+$(Gb ($after - $before)))" -ForegroundColor Green
+    $after = Get-FreeMap
+    Write-Host "`nDone. Free space:" -ForegroundColor Green
+    foreach ($d in $Drives) {
+        Write-Host "  ${d}  $(Gb $before[$d]) -> $(Gb $after[$d]) (+$(Gb ($after[$d] - $before[$d])))" -ForegroundColor Green
+    }
     if ($AppsToUninstall.Count -gt 0) { Write-Host "Restart once to finish the uninstalls." }
 }
