@@ -8,3 +8,4 @@ _logs/
 # reports contain your own file paths, keep them out of git
 *.txt
 !requirements.txt
+disk_report*.pdf
