@@ -15,20 +15,26 @@ Setup (once):
     1. Install Ollama from https://ollama.com, then in a terminal:  ollama pull llama3.2:3b
     2. pip install -r requirements.txt
     The model is set in llm.py.
+
+It never waits for input (the weekly task runs it with nobody watching) and never deletes anything.
+Every move is recorded in pc-tidy's data folder (%LOCALAPPDATA%\pc-tidy\runs) before it happens, so
+--undo works even after a crash. Exit codes: 0 done, 1 refused or nothing could be recorded,
+3 something was skipped (also kept as a notice: python pc_tidy.py status), 4 another run was busy.
 """
 
 import argparse
-import json
 import logging
 import os
 import re
-import shutil
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 import llm
+from pctidy import context, executor, journal, lock, recovery, safety, ui
+from pctidy import undo as undo_core
+from pctidy.paths import inside
+from pctidy.plan import Plan
 
 # ---------------- settings: edit these ----------------
 SOURCE = Path.home() / "Downloads"
@@ -231,48 +237,96 @@ def plan_moves(source, dest, use_llm, folders=False):
     return moves
 
 
-def apply_moves(moves, dest):
-    log_dir = dest / "_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"run_{datetime.now():%Y%m%d_%H%M%S}.json"
-    done = []
+COMMAND = "tidy_folder"
+
+
+def settings():
+    """What a plan was built under: the executor refuses a plan whose settings changed since."""
+    return {"rules": RULES, "categories": CATEGORIES, "archive_after_days": ARCHIVE_AFTER_DAYS,
+            "skip_newer_than_min": SKIP_NEWER_THAN_MIN, "rename_with_llm": RENAME_WITH_LLM}
+
+
+def build_plan(moves, source, dest, ctx=None):
+    """The exact list for the executor, with each item's fingerprint taken now, at the dry run.
+    Items the safety check refuses are left out, with a line saying why."""
+    ctx = ctx or context.current()
+    plan = Plan(COMMAND, ctx, settings(), info={"source": str(source), "dest": str(dest)})
+    for src, dst in moves:
+        problem = safety.why_refused(src, "move", ctx) or safety.why_refused(dst, "move-to", ctx)
+        if problem:
+            print(f"  not moving {src.name}: {problem}")
+            continue
+        try:
+            plan.add_move(src, dst)
+        except FileNotFoundError:
+            continue
+    return plan
+
+
+def apply_moves(moves, dest, ctx=None, source=None):
+    """Move the planned (source, target) pairs. Returns the exit code."""
+    ctx = ctx or context.current()
+    return run_plan(build_plan(moves, source or dest, dest, ctx), ctx)
+
+
+def _notice(ctx, message, **details):
+    journal.attention(ctx, "tidy", message, command="tidy_folder.py", **details)
+
+
+def run_plan(plan, ctx, waiting=()):
     try:
-        for src, dst in moves:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.move(str(src), str(dst))
-                done.append({"from": str(src), "to": str(dst)})
-            except Exception as e:
-                print(f"  could not move {src.name}: {e}")
-    finally:
-        if done:
-            log_path.write_text(json.dumps(done, indent=1, ensure_ascii=False), encoding="utf-8")
-    print(f"\nMoved {len(done)} items. Undo with the same command plus --undo instead of --apply")
+        result = executor.execute(plan, ctx, settings=settings())
+    except lock.Busy:
+        print(lock.BUSY_MESSAGE)
+        _notice(ctx, f"The sort of {plan.info.get('source')} didn't run: another pc-tidy run was busy.")
+        return lock.BUSY_EXIT
+    except executor.PlanRefused as e:
+        print(e)
+        return 1
+    _print_skipped(result.skipped)
+    moved = len([o for o in result.done if o.action["op"] == "move"])
+    print(f"\nMoved {moved} items. Undo with the same command plus --undo instead of --apply")
+    if not result.skipped:
+        return 3 if waiting else 0
+    reasons = sorted({o.reason for o in result.skipped})
+    _notice(ctx, f"The sort of {plan.info.get('source')} skipped {len(result.skipped)} item(s): " + "; ".join(reasons))
+    if not moved and any("too full to record" in r for r in reasons):
+        return 1
+    return 3
 
 
-def undo(dest):
-    logs = sorted((dest / "_logs").glob("run_*.json"))
-    if not logs:
+def _print_skipped(skipped):
+    by_reason = {}
+    for o in skipped:
+        by_reason.setdefault(o.reason, []).append(Path(o.name).name)
+    for reason, names in by_reason.items():
+        if len(names) > 3:
+            print(f"  skipped {len(names)} items: {reason}")
+        else:
+            for name in names:
+                print(f"  skipped {name}: {reason}")
+
+
+def undo(dest, ctx=None):
+    """Put back the last --apply run into this dest, from pc-tidy's journal or an old _logs file."""
+    ctx = ctx or context.current()
+    dest = Path(dest)
+    try:
+        recovery.at_start(ctx, "tidy_folder.py")
+        out = undo_core.undo_last(ctx, COMMAND, dest=str(dest),
+                                  legacy=[(str(dest / "_logs"), "run_*.json", str(dest))], ask=ui.ask)
+    except lock.Busy:
+        print(lock.BUSY_MESSAGE)
+        return lock.BUSY_EXIT
+    except executor.PlanRefused as e:
+        print(e)
+        return 1
+    if out.source is None:
         print("Nothing to undo.")
-        return
-    last = logs[-1]
-    entries = json.loads(last.read_text(encoding="utf-8"))
-    restored = 0
-    for e in reversed(entries):
-        now_at, original = Path(e["to"]), Path(e["from"])
-        if now_at.exists():
-            original.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(now_at), str(unique(original, set())))
-            restored += 1
-            parent = now_at.parent        # remove category folders that are now empty
-            while parent != dest and parent.is_relative_to(dest):
-                try:
-                    parent.rmdir()
-                except OSError:
-                    break
-                parent = parent.parent
-    last.rename(last.with_suffix(".undone"))
-    print(f"Put back {restored} items from {last.name}.")
+        return 0
+    print(f"Put back {len(out.restored)} items from {out.source.name}.")
+    undo_core.report_kept(out)
+    return 3 if out.kept else 0
 
 
 def main():
@@ -286,34 +340,63 @@ def main():
     ap.add_argument("--folders", action="store_true", help="also sort whole subfolders (needs the LLM)")
     args = ap.parse_args()
 
+    ctx = context.current()
     source = Path(os.path.expandvars(str(args.source))).expanduser()
     dest = source if args.in_place else Path(os.path.expandvars(str(args.dest))).expanduser()
 
     if args.undo:
-        undo(dest)
-        return
+        return undo(dest, ctx)
     if not source.is_dir():
         print(f"{source} is not a folder.")
-        return
+        return 0
+    problem = safety.why_refused(source, "sort", ctx)
+    if problem:      # e.g. the whole profile with --folders (problem 13)
+        print(f"Not sorting {source}: {problem}. Pick a folder inside it, such as Downloads.")
+        return 1
+    if dest != source:
+        problem = safety.why_refused(dest, "move-to", ctx)
+        if problem:
+            print(f"Not sorting into {dest}: {problem}.")
+            return 1
+
+    if args.apply:
+        try:
+            waiting = recovery.at_start(ctx, "tidy_folder.py").undecided      # never asks
+        except lock.Busy:
+            print(lock.BUSY_MESSAGE)
+            _notice(ctx, f"The sort of {source} didn't run: another pc-tidy run was busy.")
+            return lock.BUSY_EXIT
+    else:
+        waiting = recovery.undecided(ctx)
+    blocked = [p for item in waiting for p in (item.src, item.dst) if p]
+    if waiting:
+        print("An earlier move is waiting for your decision (run: python pc_tidy.py recover). "
+              "Items that touch it are skipped.")
+        if args.apply:
+            _notice(ctx, "An interrupted move is waiting for your decision. Run: python pc_tidy.py recover",
+                    paths=blocked)
 
     use_llm = not args.no_llm and llm.available()
     if not args.no_llm and not use_llm:
         print("Files that need the LLM will be left in place.\n")
-    moves = plan_moves(source, dest, use_llm, folders=args.folders)
+    moves = [(src, dst) for src, dst in plan_moves(source, dest, use_llm, folders=args.folders)
+             if not any(inside(p, b) or inside(b, p) for p in (src, dst) for b in blocked)]
     if not moves:
         print("Nothing to sort.")
-        return
+        return 3 if waiting else 0
+    plan = build_plan(moves, source, dest, ctx)
 
     print()
-    for src, dst in moves:
-        kind = "[folder] " if src.is_dir() else ""
-        print(f"{kind}{src.name}  ->  {dst.relative_to(dest)}")
+    for a in plan.actions:
+        kind = "[folder] " if a["kind"] == "dir" else ""
+        print(f"{kind}{Path(a['src']).name}  ->  {Path(a['dst']).relative_to(dest)}")
 
     if args.apply:
-        apply_moves(moves, dest)
-    else:
-        print(f"\nPreview only, {len(moves)} items. Run again with --apply to move them into {dest}.")
+        plan.save_copy()
+        return run_plan(plan, ctx, waiting)
+    print(f"\nPreview only, {len(plan.actions)} items. Run again with --apply to move them into {dest}.")
+    return 3 if waiting else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

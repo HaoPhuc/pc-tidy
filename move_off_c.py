@@ -10,26 +10,31 @@ Usage:
 Only your own files are offered: folders and big files in your user profile. Apps, games and
 system files are never moved, because they break when moved by hand; the script tells you
 the right way for those. Each item is copied, checked, and only then deleted from C:.
+
+"Another drive" means another volume: a subst letter or a link that points back into C: is
+refused, because moving there frees nothing, while a second disk mounted in a folder on C: is fine.
+Every move is recorded before it happens (in %LOCALAPPDATA%\pc-tidy\runs), so --undo works even
+after a crash, and an interrupted move is offered to finish or put back the next time this runs.
 """
 
 import argparse
-import json
 import os
 import re
-import shutil
-import stat
 import sys
-from datetime import datetime
 from pathlib import Path
 
-from scanner import GB, Scan, fixed_drives, fmt, norm, system_drive
+from pctidy import context, executor, lock, recovery, safety, ui, volume
+from pctidy import undo as undo_core
+from pctidy.plan import Plan, fingerprint
+from scanner import GB, Scan, fmt, norm, system_drive
 
 # ---------------- settings: edit these ----------------
 MIN_GB = 1.0                 # smallest folder or file worth offering
 DEST_FOLDER_NAME = "From-C"  # default destination is <other drive>:\From-C
-LOG_DIR = Path.home() / ".pc-tidy" / "move_logs"
 # -------------------------------------------------------
+LOG_DIR = Path.home() / ".pc-tidy" / "move_logs"     # where versions before 2.0 kept their undo logs
 
+COMMAND = "move_off_c"
 KNOWN_FOLDERS = ["Documents", "Pictures", "Videos", "Music", "Downloads", "Desktop"]
 # folders in your profile that are never offered: app data, synced folders, Windows special folders
 SKIP_IN_HOME = re.compile(
@@ -40,18 +45,20 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
 
 
+def default_dest(notes=None):
+    """<the other volume with the most free space>\\From-C, or None. Chosen from volumes, not drive
+    letters, so a subst letter is never picked; a locked or unreadable drive is skipped (and named
+    in `notes`, if a list is given)."""
+    dest, skipped = volume.default_destination(context.current(), DEST_FOLDER_NAME)
+    if notes is not None:
+        notes.extend(skipped)
+    return dest
+
+
 def other_drive():
-    """The fixed drive other than C: with the most free space, or None."""
-    sysd = norm(system_drive())
-    others = [d for d in fixed_drives() if norm(d) != sysd and len(d) <= 3]
-    if not others:
-        return None
-    return max(others, key=lambda d: shutil.disk_usage(d).free)
-
-
-def default_dest():
-    d = other_drive()
-    return os.path.join(d, DEST_FOLDER_NAME) if d else None
+    """The root of the default destination's drive, or None."""
+    dest = default_dest()
+    return os.path.dirname(dest) if dest else None
 
 
 def move_candidates(scan, home, min_bytes=MIN_GB * GB):
@@ -91,13 +98,14 @@ def move_tips(scan, home, min_bytes=MIN_GB * GB):
     return tips
 
 
-def blocked(path, home):
+def blocked(path, home, ctx=None):
     """Why a path may not be moved, or None if it is fine."""
+    ctx = ctx or context.current()
     p, h = norm(os.path.abspath(path)), norm(home)
     if not os.path.exists(path):
         return "it doesn't exist"
-    if not p.startswith(norm(system_drive())):
-        return "it isn't on C:"
+    if volume.volume_id(path) != volume.volume_id(ctx.system_drive):
+        return f"it isn't on {ctx.system_drive[:2]}"
     if p == h or p in {norm(os.path.join(home, k)) for k in KNOWN_FOLDERS}:
         return "it's a Windows user folder. Move it with right-click > Properties > Location instead"
     if not p.startswith(h + "/"):
@@ -105,7 +113,7 @@ def blocked(path, home):
     first = p[len(h) + 1:].split("/")[0]
     if SKIP_IN_HOME.match(first):
         return "it holds app data or synced files that break when moved by hand"
-    return None
+    return safety.why_refused(path, "move", ctx)
 
 
 def dest_for(src, home, dest_root):
@@ -128,61 +136,6 @@ def _tree_stats(path):
     return n, b
 
 
-def _force_remove(func, path, _exc):
-    os.chmod(path, stat.S_IWRITE)   # git and some apps mark files read-only
-    func(path)
-
-
-def _rmtree(path):
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_force_remove)
-    else:
-        shutil.rmtree(path, onerror=_force_remove)
-
-
-def _remove(path):
-    if os.path.isdir(path):
-        _rmtree(path)
-    elif os.path.exists(path):
-        os.chmod(path, stat.S_IWRITE)
-        os.remove(path)
-
-
-def _same_drive(a, b):
-    return os.path.splitdrive(os.path.abspath(a))[0].lower() == os.path.splitdrive(os.path.abspath(b))[0].lower()
-
-
-def safe_move(src, dst):
-    """Copy src to dst on another drive, check the copy, then delete src.
-    If anything fails before the check passes, the partial copy is removed and src is untouched."""
-    if _same_drive(src, dst):
-        raise ValueError("destination is on the same drive, that frees no space")
-    if os.path.exists(dst):
-        raise FileExistsError(f"{dst} already exists")
-    before = _tree_stats(src)
-    free = shutil.disk_usage(os.path.splitdrive(os.path.abspath(dst))[0] + os.sep).free
-    if free < before[1] * 1.02 + 200 * 1024 ** 2:
-        raise OSError(f"not enough free space on the destination drive ({free / GB:.1f} GB free)")
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    try:
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, symlinks=True)
-        else:
-            shutil.copy2(src, dst)
-        after = _tree_stats(dst)
-        if after != before:
-            raise OSError(f"copy incomplete ({after[0]} of {before[0]} files)")
-    except BaseException:
-        _remove(dst)
-        raise
-    try:
-        _remove(src)
-    except OSError as e:
-        print(f"    Copied fine, but some of the original couldn't be deleted ({e}). "
-              f"The full copy is at {dst}; delete what's left of {src} yourself.")
-    return before[1]
-
-
 def parse_choice(text, n):
     """'1,3-5' -> [0, 2, 3, 4] (indexes), ignoring numbers out of range."""
     picked = []
@@ -195,43 +148,95 @@ def parse_choice(text, n):
     return picked
 
 
-def run_moves(items, home, dest_root):
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"moves_{datetime.now():%Y%m%d_%H%M%S}.json"
-    done, freed = [], 0
+def settings():
+    return {"min_gb": MIN_GB, "dest_folder_name": DEST_FOLDER_NAME}
+
+
+def build_plan(items, home, dest_root, ctx=None):
+    """The exact list of moves, with each item's fingerprint taken now. Items the destination's file
+    system can't hold are left out, with a line saying why."""
+    ctx = ctx or context.current()
+    plan = Plan(COMMAND, ctx, settings(), info={"dest": dest_root})
+    dest_volume = volume.volume_of(dest_root)
+    fat32 = dest_volume is not None and dest_volume.fs.upper() == "FAT32"
     for item in items:
         src = item["path"]
-        dst = dest_for(src, home, dest_root)
-        print(f"  moving {src}  ->  {dst} ...")
-        try:
-            freed += safe_move(src, dst)
-        except Exception as e:
-            print(f"    skipped: {e}")
+        fp = fingerprint(src)
+        if fp is None:
+            print(f"Not moving {src}: it isn't there any more.")
             continue
-        done.append({"from": src, "to": dst, "bytes": item["size"]})
-        log_path.write_text(json.dumps(done, indent=1, ensure_ascii=False), encoding="utf-8")
-    print(f"\nMoved {len(done)} of {len(items)} items, freed about {freed / GB:.1f} GB on C:.")
+        biggest = fp.get("size", fp.get("biggest", 0))
+        if fat32 and biggest >= volume.FAT32_MAX_FILE:
+            print(f"Not moving {src}: it has a file of 4 GB or more, and {dest_volume.name} uses FAT32, "
+                  "which can't hold files that big.")
+            continue
+        plan.add_move(src, dest_for(src, home, dest_root))
+    if volume.is_default_folder(dest_root, DEST_FOLDER_NAME):
+        # if C: is too full for the journal, it can be kept here, where recovery and undo look for it
+        plan.journal_fallback = os.path.join(dest_root, context.VOLUME_JOURNAL_FOLDER)
+    return plan
+
+
+def run_plan(plan, ctx=None):
+    """Do the moves after the yes. Returns the exit code."""
+    ctx = ctx or context.current()
+    drive = ctx.system_drive[:2]
+    problem = volume.destination_problem(plan.info["dest"], ctx)
+    if problem:      # checked again here, as every move is: moving onto C:'s own volume frees nothing
+        for a in plan.actions:
+            print(f"  moving {a['src']}  ->  {a['dst']} ...")
+            print(f"    skipped: {problem}")
+        print(f"\nMoved 0 of {len(plan.actions)} items.")
+        return 1
+
+    def started(a):
+        print(f"  moving {a['src']}  ->  {a['dst']} ...")
+
+    def ended(o):
+        if o.status != "done":
+            print(f"    skipped: {o.reason}")
+
+    try:
+        result = executor.execute(plan, ctx, settings=settings(), on_action=started, on_outcome=ended)
+    except lock.Busy:
+        print(lock.BUSY_MESSAGE)
+        return lock.BUSY_EXIT
+    except executor.PlanRefused as e:
+        print(e)
+        return 1
+    done = [o for o in result.done if o.action["op"] == "move"]
+    print(f"\nMoved {len(done)} of {len(plan.actions)} items ({result.bytes_moved / GB:.1f} GB).")
+    line = executor.free_space_line(result, drive)
+    if line:
+        print(line)
     if done:
         print("Undo with:  python move_off_c.py --undo")
+    return 0 if len(done) == len(plan.actions) else 3
 
 
-def undo():
-    logs = sorted(LOG_DIR.glob("moves_*.json")) if LOG_DIR.exists() else []
-    if not logs:
+def undo(ctx=None):
+    """Move the last batch back."""
+    ctx = ctx or context.current()
+
+    def started(a):
+        if a["op"] == "move":
+            print(f"  moving back {a['src']}  ->  {a['dst']} ...")
+
+    try:
+        out = undo_core.undo_last(ctx, COMMAND, legacy=[(ctx.legacy_move_logs, "moves_*.json", None)],
+                                  ask=ui.ask, on_action=started)
+    except lock.Busy:
+        print(lock.BUSY_MESSAGE)
+        return lock.BUSY_EXIT
+    except executor.PlanRefused as e:
+        print(e)
+        return 1
+    if out.source is None:
         print("Nothing to undo.")
-        return
-    last = logs[-1]
-    entries = json.loads(last.read_text(encoding="utf-8"))
-    back = 0
-    for e in reversed(entries):
-        print(f"  moving back {e['to']}  ->  {e['from']} ...")
-        try:
-            safe_move(e["to"], e["from"])
-            back += 1
-        except Exception as ex:
-            print(f"    skipped: {ex}")
-    last.rename(last.with_suffix(".undone"))
-    print(f"Moved back {back} of {len(entries)} items.")
+        return 0
+    print(f"Moved back {len(out.restored)} of {out.total} items.")
+    undo_core.report_kept(out)
+    return 3 if out.kept else 0
 
 
 def main():
@@ -242,26 +247,37 @@ def main():
     ap.add_argument("--undo", action="store_true", help="move the last batch back")
     args = ap.parse_args()
 
+    ctx = context.current()
+    try:      # finish what an interrupted run left, and ask about moves only you can decide
+        recovery.at_start(ctx, "move_off_c.py", ask=ui.ask)
+    except lock.Busy:
+        print(lock.BUSY_MESSAGE)
+        return lock.BUSY_EXIT
     if args.undo:
-        undo()
-        return
+        return undo(ctx)
 
     home = str(Path.home())
-    dest_root = args.to or default_dest()
+    notes = []
+    dest_root = args.to or default_dest(notes)
+    for note in notes:
+        print(note)
     if not dest_root:
         print("No other drive found. Pass a destination with --to, e.g. --to D:\\From-C")
-        return
+        return 0
+    if volume.is_network(dest_root):
+        print(f"Can't move to {dest_root}: {volume.destination_problem(dest_root, ctx)}")
+        return 1
 
     if args.path:
         items = []
         for p in args.path:
-            reason = blocked(p, home)
+            reason = blocked(p, home, ctx)
             if reason:
                 print(f"Not moving {p}: {reason}.")
             else:
                 items.append({"path": os.path.abspath(p), "size": _tree_stats(p)[1], "kind": "path"})
         if not items:
-            return
+            return 0
     else:
         print(f"Scanning {home} ...")
         scan = Scan([home], files_over_bytes=args.min_gb * GB)
@@ -270,26 +286,37 @@ def main():
             print(f"  Tip: {tip}")
         if not cands:
             print(f"\nNothing of {args.min_gb:g} GB or more that is safe to move.")
-            return
-        free = shutil.disk_usage(os.path.splitdrive(os.path.abspath(dest_root))[0] + os.sep).free
-        print(f"\nCan move to {dest_root} ({free / GB:.0f} GB free there):")
+            return 0
+        free = volume.free_bytes(dest_root)
+        there = f" ({free / GB:.0f} GB free there)" if free is not None else ""
+        print(f"\nCan move to {dest_root}{there}:")
         for i, c in enumerate(cands, 1):
             print(f"  {i:2})  {fmt(c['size'])}  {c['path']}")
-        choice = input("\nType the numbers to move (e.g. 1,3 or 2-4), or press Enter to cancel: ")
-        items = [cands[i] for i in parse_choice(choice, len(cands))]
+        choice = ui.ask("\nType the numbers to move (e.g. 1,3 or 2-4), or press Enter to cancel: ")
+        items = [cands[i] for i in parse_choice(choice or "", len(cands))]
         if not items:
             print("Nothing moved.")
-            return
+            return 0
 
-    total = sum(i["size"] for i in items)
-    print(f"\nThis moves {len(items)} item(s), {total / GB:.1f} GB, to {dest_root}:")
-    for i in items:
-        print(f"  {i['path']}  ->  {dest_for(i['path'], home, dest_root)}")
-    if input("Type yes to continue: ").strip().lower() != "yes":
+    plan = build_plan(items, home, dest_root, ctx)
+    if not plan.actions:
+        return 0
+    total = sum(a["bytes"] for a in plan.actions)
+    print(f"\nThis moves {len(plan.actions)} item(s), {total / GB:.1f} GB, to {dest_root}:")
+    for a in plan.actions:
+        print(f"  {a['src']}  ->  {a['dst']}")
+    plan.save_copy()
+    if not ui.ask_yes("Type yes to continue: "):
         print("Cancelled, nothing moved.")
-        return
-    run_moves(items, home, dest_root)
+        return 0
+    dest_volume = volume.volume_of(dest_root)
+    if dest_volume is not None and dest_volume.usb:
+        print(f"{dest_volume.name} is a USB drive. The moved files will only be there while it is plugged in.")
+        if not ui.ask_yes("Type yes again to move them there: "):
+            print("Cancelled, nothing moved.")
+            return 0
+    return run_plan(plan, ctx)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
