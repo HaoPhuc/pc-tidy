@@ -1,0 +1,2 @@
+-r requirements.txt
+pytest==8.4.2    # 9.x needs Python 3.10
