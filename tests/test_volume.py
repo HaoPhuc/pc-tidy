@@ -119,3 +119,16 @@ def test_a_destination_that_cant_be_read_is_refused_by_name(tmp_path, monkeypatc
 def test_the_same_letter_is_the_same_drive(tmp_path):
     assert volume.destination_problem(tmp_path / "dest") == "the destination is on the same drive, that frees no space"
     assert volume.same_volume(tmp_path, os.environ["SystemDrive"] + "\\")
+
+
+def test_full_c_journals_are_found_whatever_the_destination_folder_was_called(ntfs_volume, tmp_path):
+    """[move] dest_folder_name can change between a run and its undo, so every top-level folder is looked in."""
+    from pctidy.paths import norm
+    from support import remove_tree
+    folder = Path(ntfs_volume.root) / f"Moved-{tmp_path.name}"
+    (folder / context.VOLUME_JOURNAL_FOLDER).mkdir(parents=True)
+    try:
+        found = {norm(f) for f in volume.journal_folders(context.current())}
+        assert norm(folder / context.VOLUME_JOURNAL_FOLDER) in found
+    finally:
+        remove_tree(folder)

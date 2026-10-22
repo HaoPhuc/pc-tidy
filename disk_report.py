@@ -9,6 +9,11 @@ Usage:
 
 Run PowerShell as administrator to also see inside protected folders.
 A full scan takes a few minutes per drive. To act on the report, see cleanup.ps1 and move_off_c.py.
+
+Settings are in settings.ini (python pc_tidy.py settings edit): [report] for the folder tree and the
+lists, [ai] for the local AI, and your own [label.*], [category.*] and [apptype.*] rules. The report
+only reads, so a mistake never stops it: a broken value uses its default and a broken rule is
+skipped, and the report says so at the top.
 """
 
 import argparse
@@ -17,28 +22,28 @@ import platform
 import re
 import sys
 from datetime import datetime
+from types import SimpleNamespace
 
 import classify
 import llm
 import move_off_c
+from pctidy import settings
 from scanner import GB, Scan, clean_root, fixed_drives, fmt, norm, system_drive
-
-# ---------------- settings: edit these ----------------
-MIN_GB = 1.0            # folders smaller than this are hidden from the tree
-MAX_DEPTH = 8           # how many levels deep the tree goes
-TOP_FILES = 20          # how many of the biggest files to list
-CLEANUP_MIN_GB = 0.1    # smallest cleanable item worth listing
-LLM_MAX_FOLDERS = 15    # at most this many unknown folders are described by the LLM
-LLM_MAX_APPS = 60       # at most this many unrecognized apps are classified by the LLM
-# -------------------------------------------------------
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
 
 
-def build_tree(root, scan):
-    """Folders above MIN_GB as rows (size, depth, name, label).
+def options(cfg=None):
+    """What the report reads: [report], [ai] and [move] (the "could move" section) of settings.ini."""
+    cfg = cfg or settings.load()
+    return SimpleNamespace(report=cfg.section("report"), ai=cfg.section("ai"), move=cfg.section("move"))
+
+
+def build_tree(root, scan, opts=None):
+    """Folders above [report] min_gb as rows (size, depth, name, label).
     Also returns the unknown leaf folders (for the LLM) and the 'info' items shown."""
+    r = (opts or options()).report
     rows, leaves, info = [], [], []
 
     def show(folder, depth, under_known):
@@ -47,9 +52,9 @@ def build_tree(root, scan):
         rows.append((scan.sizes[folder], depth, name, rule.what if rule else ""))
         if rule and rule.kind == "info":
             info.append((scan.sizes[folder], folder, rule))
-        big = sorted((c for c in scan.children.get(folder, []) if scan.sizes.get(c, 0) >= MIN_GB * GB),
+        big = sorted((c for c in scan.children.get(folder, []) if scan.sizes.get(c, 0) >= r.min_gb * GB),
                      key=lambda c: -scan.sizes[c])
-        expand = depth < MAX_DEPTH and (rule is None or rule.expand)
+        expand = depth < r.max_depth and (rule is None or rule.expand)
         if expand:
             for c in big:
                 show(c, depth + 1, under_known or rule is not None)
@@ -61,11 +66,13 @@ def build_tree(root, scan):
     return rows, leaves, info
 
 
-def cleanup_items(scan):
-    """Every 'clean' item above CLEANUP_MIN_GB. Outermost match only (no node_modules inside node_modules)."""
+def cleanup_items(scan, min_gb=None):
+    """Every 'clean' item above [report] cleanup_min_gb. Outermost match only (no node_modules inside
+    node_modules)."""
+    min_gb = options().report.cleanup_min_gb if min_gb is None else min_gb
     found, kept = [], []
-    candidates = [(p, s) for p, s in scan.sizes.items() if s >= CLEANUP_MIN_GB * GB]
-    candidates += [(p, s) for s, p in scan.big_files if s >= CLEANUP_MIN_GB * GB]
+    candidates = [(p, s) for p, s in scan.sizes.items() if s >= min_gb * GB]
+    candidates += [(p, s) for s, p in scan.big_files if s >= min_gb * GB]
     for path, size in sorted(candidates, key=lambda x: len(x[0])):
         rule = classify.known(path)
         if not rule or rule.kind != "clean":
@@ -94,10 +101,10 @@ def llm_describe(folder, scan):
     return llm.ask_json(prompt, schema).get("what", "?")
 
 
-def llm_app_types(apps):
+def llm_app_types(apps, max_apps=None):
     """Ask the LLM to sort apps no rule recognized into APP_TYPES. Returns {name: type}."""
     out = {}
-    apps = apps[:LLM_MAX_APPS]
+    apps = apps[:options().ai.max_apps if max_apps is None else max_apps]
     for start in range(0, len(apps), 20):
         chunk = apps[start:start + 20]
         listing = "\n".join(f"{i + 1}. {a['name']} (publisher: {a['publisher'] or 'unknown'})"
@@ -122,12 +129,15 @@ def llm_app_types(apps):
     return out
 
 
-def build_report(roots, use_llm=True):
+def build_report(roots, use_llm=True, opts=None):
+    opts = opts or options()
     print(f"Scanning {', '.join(roots)} (this can take a few minutes per drive) ...")
-    scan = Scan(roots, top_files=TOP_FILES, files_over_bytes=move_off_c.MIN_GB * GB)
+    scan = Scan(roots, top_files=opts.report.top_files, files_over_bytes=opts.move.min_gb * GB)
     data = {
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "computer": platform.node(),
+        "settings_problems": list(getattr(opts, "problems", [])),
+        "min_gb": opts.report.min_gb,
         "stats": scan.stats,
         "drives": [{"root": r, "used": u.used, "total": u.total, "free": u.free} for r, u in scan.usage.items()],
     }
@@ -137,7 +147,7 @@ def build_report(roots, use_llm=True):
 
     data["trees"], leaves, info = [], [], []
     for root in roots:
-        rows, root_leaves, root_info = build_tree(root, scan)
+        rows, root_leaves, root_info = build_tree(root, scan, opts)
         data["trees"].append((root, rows))
         leaves += root_leaves
         info += root_info
@@ -149,7 +159,7 @@ def build_report(roots, use_llm=True):
         if rule and rule.kind == "info":
             info.append((size, path, rule))
 
-    data["cleanup"] = cleanup_items(scan)
+    data["cleanup"] = cleanup_items(scan, opts.report.cleanup_min_gb)
     kept, data["info"] = [], []
     for size, path, rule in sorted(info, key=lambda x: len(x[1])):   # outermost first
         n = norm(path)
@@ -164,21 +174,23 @@ def build_report(roots, use_llm=True):
     home = next((k for k in scan.sizes if norm(k) == norm(os.path.expanduser("~"))), None)   # on-disk spelling
     data["move"] = None
     if any(norm(r) == sysd for r in roots) and home:
-        dest = move_off_c.default_dest()
+        dest = move_off_c.default_dest(opts=opts.move)
+        min_bytes = opts.move.min_gb * GB
         data["move"] = {
             "dest": dest,
-            "candidates": move_off_c.move_candidates(scan, home) if dest else [],
-            "tips": move_off_c.move_tips(scan, home),
+            "candidates": move_off_c.move_candidates(scan, home, min_bytes) if dest else [],
+            "tips": move_off_c.move_tips(scan, home, min_bytes),
         }
 
     llm_ok = use_llm and llm.available()
     apps = classify.installed_apps()
-    data["apps"] = classify.classify_apps(apps, ask_llm=llm_app_types if llm_ok else None)
+    data["apps"] = classify.classify_apps(apps, ask_llm=(lambda unknown: llm_app_types(unknown, opts.ai.max_apps))
+                                          if llm_ok else None)
 
     data["llm_folders"] = []
     leaves = [f for f in leaves if cat_of.get(f) != classify.PERSONAL]   # you know what your own folders are
     if leaves and llm_ok:
-        for folder in sorted(leaves, key=lambda f: -scan.sizes[f])[:LLM_MAX_FOLDERS]:
+        for folder in sorted(leaves, key=lambda f: -scan.sizes[f])[:opts.ai.max_folders]:
             sys.stderr.write(f"\r  asking LLM about {os.path.basename(folder)[:40]} ...{' ' * 20}")
             try:
                 what = llm_describe(folder, scan)
@@ -194,6 +206,10 @@ def render_text(data):
     out = [f"DISK REPORT  {data['generated']}  {data['computer']}"]
     s = data["stats"]
     out.append(f"Scanned {s['files']:,} files ({s['bytes'] / GB:.1f} GB) in {s['seconds']:.0f} s")
+    if data.get("settings_problems"):
+        out.append("\nSETTINGS.INI HAS MISTAKES (this report used the defaults for them, and skipped broken rules)")
+        out += [f"  {p}" for p in data["settings_problems"]]
+        out.append("  Fix them with: python pc_tidy.py settings edit")
 
     out.append("\nDRIVES")
     for d in data["drives"]:
@@ -236,7 +252,7 @@ def render_text(data):
                 out.append(f"  {size}  {a['name']}" + ("  [LLM guess]" if a.get("llm") else ""))
 
     for root, rows in data["trees"]:
-        out.append(f"\nBIGGEST FOLDERS ON {root} (over {MIN_GB:g} GB)")
+        out.append(f"\nBIGGEST FOLDERS ON {root} (over {data.get('min_gb', 1.0):g} GB)")
         for size, depth, name, label in rows:
             out.append(f"{fmt(size)}  {'  ' * depth}{name}" + (f"   <- {label}" if label else ""))
 
@@ -269,8 +285,24 @@ def main():
     ap.add_argument("--no-open", action="store_true", help="don't open the PDF when done")
     args = ap.parse_args()
 
+    cfg = settings.load(create=True)
+    for note in cfg.notes:
+        print(note)
+    # its own sections, your rules, and sections with names nothing knows (a misspelt rule, say)
+    problems = [p for p in cfg.errors() if p.section in ("report", "ai", "move")
+                or settings.section_kind(p.section or "") in ("rule", None)]
+    if problems:       # the report only reads: it goes on with the defaults, and says so
+        print(f"{cfg.name} has mistakes. This report uses the defaults for them and skips broken rules:")
+        for p in problems:
+            print(f"  {cfg.describe(p)}")
+        print("Fix them with: python pc_tidy.py settings edit\n")
+    classify.use_rules(cfg.good_rules())
+    opts = options(cfg)
+    opts.problems = [cfg.describe(p) for p in problems]
+    llm.configure(opts.ai)
+
     roots = [clean_root(p) for p in (args.path or fixed_drives())]
-    data = build_report(roots, use_llm=not args.no_llm)
+    data = build_report(roots, use_llm=not args.no_llm and opts.ai.enabled, opts=opts)
     text = render_text(data)
     print("\n" + text)
 

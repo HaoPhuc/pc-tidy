@@ -15,6 +15,10 @@ the right way for those. Each item is copied, checked, and only then deleted fro
 refused, because moving there frees nothing, while a second disk mounted in a folder on C: is fine.
 Every move is recorded before it happens (in %LOCALAPPDATA%\pc-tidy\runs), so --undo works even
 after a crash, and an interrupted move is offered to finish or put back the next time this runs.
+
+Settings are in [move] of settings.ini (python pc_tidy.py settings edit): min_gb, the smallest item
+offered (--min-gb wins over it), and dest_folder_name, the folder on the other drive (--to wins
+over it). A mistake there stops this script with exit code 2; --undo still works.
 """
 
 import argparse
@@ -23,15 +27,11 @@ import re
 import sys
 from pathlib import Path
 
-from pctidy import context, executor, lock, recovery, safety, ui, volume
+from pctidy import context, executor, lock, recovery, safety, settings, ui, volume
 from pctidy import undo as undo_core
 from pctidy.plan import Plan, fingerprint
 from scanner import GB, Scan, fmt, norm, system_drive
 
-# ---------------- settings: edit these ----------------
-MIN_GB = 1.0                 # smallest folder or file worth offering
-DEST_FOLDER_NAME = "From-C"  # default destination is <other drive>:\From-C
-# -------------------------------------------------------
 LOG_DIR = Path.home() / ".pc-tidy" / "move_logs"     # where versions before 2.0 kept their undo logs
 
 COMMAND = "move_off_c"
@@ -45,11 +45,17 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
 
 
-def default_dest(notes=None):
+def options(cfg=None):
+    """[move] of settings.ini: min_gb and dest_folder_name."""
+    return (cfg or settings.load()).section("move")
+
+
+def default_dest(notes=None, opts=None):
     """<the other volume with the most free space>\\From-C, or None. Chosen from volumes, not drive
     letters, so a subst letter is never picked; a locked or unreadable drive is skipped (and named
     in `notes`, if a list is given)."""
-    dest, skipped = volume.default_destination(context.current(), DEST_FOLDER_NAME)
+    opts = opts or options()
+    dest, skipped = volume.default_destination(context.current(), opts.dest_folder_name)
     if notes is not None:
         notes.extend(skipped)
     return dest
@@ -61,8 +67,9 @@ def other_drive():
     return os.path.dirname(dest) if dest else None
 
 
-def move_candidates(scan, home, min_bytes=MIN_GB * GB):
+def move_candidates(scan, home, min_bytes=None):
     """Personal folders and big files in your profile that are safe to move, biggest first."""
+    min_bytes = options().min_gb * GB if min_bytes is None else min_bytes
     out, known = [], {norm(os.path.join(home, k)) for k in KNOWN_FOLDERS}
     for top in scan.children.get(home, []):
         name = os.path.basename(top)
@@ -79,8 +86,9 @@ def move_candidates(scan, home, min_bytes=MIN_GB * GB):
     return sorted(out, key=lambda c: -c["size"])
 
 
-def move_tips(scan, home, min_bytes=MIN_GB * GB):
+def move_tips(scan, home, min_bytes=None):
     """Advice for big things this script deliberately doesn't move."""
+    min_bytes = options().min_gb * GB if min_bytes is None else min_bytes
     tips = []
     for k in KNOWN_FOLDERS:
         p = os.path.join(home, k)
@@ -148,15 +156,17 @@ def parse_choice(text, n):
     return picked
 
 
-def settings():
-    return {"min_gb": MIN_GB, "dest_folder_name": DEST_FOLDER_NAME}
+def plan_settings(opts):
+    """What a plan was built under: the executor refuses a plan whose settings changed since."""
+    return {"min_gb": opts.min_gb, "dest_folder_name": opts.dest_folder_name}
 
 
-def build_plan(items, home, dest_root, ctx=None):
+def build_plan(items, home, dest_root, ctx=None, opts=None):
     """The exact list of moves, with each item's fingerprint taken now. Items the destination's file
     system can't hold are left out, with a line saying why."""
     ctx = ctx or context.current()
-    plan = Plan(COMMAND, ctx, settings(), info={"dest": dest_root})
+    opts = opts or options(settings.load(ctx))
+    plan = Plan(COMMAND, ctx, plan_settings(opts), info={"dest": dest_root})
     dest_volume = volume.volume_of(dest_root)
     fat32 = dest_volume is not None and dest_volume.fs.upper() == "FAT32"
     for item in items:
@@ -171,7 +181,7 @@ def build_plan(items, home, dest_root, ctx=None):
                   "which can't hold files that big.")
             continue
         plan.add_move(src, dest_for(src, home, dest_root))
-    if volume.is_default_folder(dest_root, DEST_FOLDER_NAME):
+    if volume.is_default_folder(dest_root, opts.dest_folder_name):
         # if C: is too full for the journal, it can be kept here, where recovery and undo look for it
         plan.journal_fallback = os.path.join(dest_root, context.VOLUME_JOURNAL_FOLDER)
     return plan
@@ -197,7 +207,9 @@ def run_plan(plan, ctx=None):
             print(f"    skipped: {o.reason}")
 
     try:
-        result = executor.execute(plan, ctx, settings=settings(), on_action=started, on_outcome=ended)
+        # read again: if settings.ini changed while you were answering, the executor refuses the plan
+        result = executor.execute(plan, ctx, settings=plan_settings(options(settings.load(ctx))),
+                                  on_action=started, on_outcome=ended)
     except lock.Busy:
         print(lock.BUSY_MESSAGE)
         return lock.BUSY_EXIT
@@ -242,12 +254,22 @@ def undo(ctx=None):
 def main():
     ap = argparse.ArgumentParser(description="Move big personal folders and files from C: to another drive.")
     ap.add_argument("--path", action="append", help="move this folder or file (can be given more than once)")
-    ap.add_argument("--to", help=f"destination folder (default: <other drive>\\{DEST_FOLDER_NAME})")
-    ap.add_argument("--min-gb", type=float, default=MIN_GB, help="smallest item to offer")
+    ap.add_argument("--to", help="destination folder (default: <other drive>\\From-C, or the folder named "
+                                 "by [move] dest_folder_name in settings.ini)")
+    ap.add_argument("--min-gb", type=float, help="smallest item to offer (default: [move] min_gb in settings.ini, 1)")
     ap.add_argument("--undo", action="store_true", help="move the last batch back")
     args = ap.parse_args()
 
     ctx = context.current()
+    cfg = settings.load(ctx, create=True)
+    for note in cfg.notes:
+        print(note)
+    problems = cfg.errors("move")
+    if problems and not args.undo:      # undo reads nothing from [move], so it still works
+        print(settings.refusal(cfg, problems, "move_off_c.py"))
+        return settings.EXIT
+    opts = options(cfg)
+    min_gb = opts.min_gb if args.min_gb is None else args.min_gb
     try:      # finish what an interrupted run left, and ask about moves only you can decide
         recovery.at_start(ctx, "move_off_c.py", ask=ui.ask)
     except lock.Busy:
@@ -258,11 +280,11 @@ def main():
 
     home = str(Path.home())
     notes = []
-    dest_root = args.to or default_dest(notes)
+    dest_root = args.to or default_dest(notes, opts)
     for note in notes:
         print(note)
     if not dest_root:
-        print("No other drive found. Pass a destination with --to, e.g. --to D:\\From-C")
+        print(f"No other drive found. Pass a destination with --to, e.g. --to D:\\{opts.dest_folder_name}")
         return 0
     if volume.is_network(dest_root):
         print(f"Can't move to {dest_root}: {volume.destination_problem(dest_root, ctx)}")
@@ -280,12 +302,12 @@ def main():
             return 0
     else:
         print(f"Scanning {home} ...")
-        scan = Scan([home], files_over_bytes=args.min_gb * GB)
-        cands = move_candidates(scan, home, args.min_gb * GB)
-        for tip in move_tips(scan, home, args.min_gb * GB):
+        scan = Scan([home], files_over_bytes=min_gb * GB)
+        cands = move_candidates(scan, home, min_gb * GB)
+        for tip in move_tips(scan, home, min_gb * GB):
             print(f"  Tip: {tip}")
         if not cands:
-            print(f"\nNothing of {args.min_gb:g} GB or more that is safe to move.")
+            print(f"\nNothing of {min_gb:g} GB or more that is safe to move.")
             return 0
         free = volume.free_bytes(dest_root)
         there = f" ({free / GB:.0f} GB free there)" if free is not None else ""
@@ -298,7 +320,7 @@ def main():
             print("Nothing moved.")
             return 0
 
-    plan = build_plan(items, home, dest_root, ctx)
+    plan = build_plan(items, home, dest_root, ctx, opts)
     if not plan.actions:
         return 0
     total = sum(a["bytes"] for a in plan.actions)

@@ -4,7 +4,8 @@ Every pc-tidy module asks a Context for these places instead of reading environm
 itself, so the tests can point all of them at fake folders and test volumes.
 
 PCTIDY_SANDBOX_ROOT (one or more folders, separated by ';') is set by the tests only. While it is
-set, safety.check refuses anything outside those folders, and the test hooks below are honoured.
+set, safety.check refuses anything outside those folders, the test hooks below are honoured, and
+settings.ini is the one in the first of those folders, so a test never reads or writes the real one.
 """
 
 import ctypes
@@ -65,6 +66,8 @@ class Context:
         self.legacy_move_logs = os.path.join(self.profile, ".pc-tidy", "move_logs")
         roots = get("PCTIDY_SANDBOX_ROOT", default="")
         self.sandbox = [os.path.abspath(r) for r in roots.split(os.pathsep) if r.strip()]
+        # found through pc-tidy's own folder, so an admin window that starts in System32 finds it too
+        self.settings_file = os.path.join(self.sandbox[0] if self.sandbox else APP_DIR, "settings.ini")
         self._known = None
 
     # ---------- places ----------

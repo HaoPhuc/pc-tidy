@@ -203,19 +203,26 @@ def is_default_folder(dest, folder_name=context.DEST_FOLDER_NAME):
     return norm(dest) == norm(os.path.join(mount, folder_name))
 
 
-def journal_folders(ctx=None, folder_name=context.DEST_FOLDER_NAME):
-    """<mount>\\From-C\\_pc-tidy on every ready local volume: where full-C: runs keep their journal."""
+def journal_folders(ctx=None):
+    """<mount>\\<folder>\\_pc-tidy on every ready local volume: where full-C: runs keep their journal.
+    <folder> is From-C, or whatever [move] dest_folder_name was when the run was made, so every
+    top-level folder is looked in, not only today's setting."""
     ctx = ctx or context.current()
     out = []
     for v in local_volumes():
         if v.problem:
             continue
         for m in v.mounts:
-            folder = os.path.join(m, folder_name, context.VOLUME_JOURNAL_FOLDER)
-            if ctx.sandbox and not ctx.in_sandbox(folder):
+            try:
+                tops = [e.path for e in os.scandir(_win.long_path(m)) if e.is_dir(follow_symlinks=False)]
+            except OSError:
                 continue
-            if os.path.isdir(_win.long_path(folder)):
-                out.append(folder)
+            for top in tops:
+                folder = os.path.join(m, os.path.basename(top), context.VOLUME_JOURNAL_FOLDER)
+                if ctx.sandbox and not ctx.in_sandbox(folder):
+                    continue
+                if os.path.isdir(_win.long_path(folder)):
+                    out.append(folder)
     return out
 
 
