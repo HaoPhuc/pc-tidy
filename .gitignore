@@ -3,9 +3,12 @@ __pycache__/
 .venv/
 venv/
 _logs/
+!tests/fixtures/legacy_logs/tidy/_logs/
 .vscode/
 .idea/
+.pytest_cache/
 # reports contain your own file paths, keep them out of git
 *.txt
 !requirements.txt
+!requirements-dev.txt
 disk_report*.pdf

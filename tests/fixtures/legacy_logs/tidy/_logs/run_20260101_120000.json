@@ -1,0 +1,10 @@
+[
+ {
+  "from": "{SOURCE}\\lecture notes.zip",
+  "to": "{DEST}\\Archives\\lecture notes.zip"
+ },
+ {
+  "from": "{SOURCE}\\cat.jpg",
+  "to": "{DEST}\\Archive\\Pictures\\cat.jpg"
+ }
+]
