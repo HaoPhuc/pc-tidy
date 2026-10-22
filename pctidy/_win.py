@@ -4,6 +4,7 @@ Every function here only reads, except the mutex calls used by lock.py.
 """
 
 import ctypes
+import functools
 import os
 from ctypes import wintypes
 
@@ -232,6 +233,7 @@ def _token_info(kind):
         kernel32.CloseHandle(token)
 
 
+@functools.lru_cache(maxsize=None)
 def user_sid():
     """The SID of the user this process runs as, e.g. 'S-1-5-21-...-1001'."""
     if not ON_WINDOWS:

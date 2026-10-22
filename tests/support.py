@@ -1,6 +1,7 @@
 """Shared helpers for the tests: a fake user profile, a way to run the pc-tidy commands against it,
 and tree snapshots."""
 
+import contextlib
 import ctypes
 import os
 import shutil
@@ -173,9 +174,9 @@ class Runner:
     def command_env(self, env=None, extra_roots=()):
         """The environment a command runs with: env() plus the drive of the fake profile as the system
         drive, `env` on top, and `extra_roots` (test volumes) allowed as well."""
-        full = self.env()
-        full["SystemDrive"] = os.path.splitdrive(str(self.home))[0]
-        full.update(env or {})
+        full = self.env()      # a copy of os.environ: its names are in upper case
+        full["SYSTEMDRIVE"] = os.path.splitdrive(str(self.home))[0]
+        full.update({k.upper(): v for k, v in (env or {}).items()})
         if extra_roots:
             more = os.pathsep + os.pathsep.join(str(r) for r in extra_roots)
             full["PCTIDY_TEST_GUARD_ROOTS"] += more
@@ -329,11 +330,12 @@ def sparse_file(path, size):
     return path
 
 
-def start_unelevated(argv, env, cwd, output):
-    """Start a process as this user but without admin rights, at medium integrity: what a normal (not
-    elevated) window of the same user gets. Its stdout and stderr go to the file `output`.
-    Returns the process handle, for wait_handle()."""
-    import msvcrt
+@contextlib.contextmanager
+def as_normal_window():
+    """Run the block on this thread as a normal (not elevated) window of the same user would: this
+    process's token without its admin rights (UAC's filtered token) and at medium integrity. Access to
+    named objects such as pc-tidy's lock is checked against the thread's token, so this is what a
+    normal window can and can't do with an elevated window's lock."""
     from ctypes import wintypes as w
     adv = ctypes.WinDLL("advapi32", use_last_error=True)
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -347,71 +349,46 @@ def start_unelevated(argv, env, cwd, output):
     adv.GetLengthSid.argtypes = [P]
     adv.GetLengthSid.restype = w.DWORD
     adv.SetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, P, w.DWORD]
-    adv.CreateProcessAsUserW.argtypes = [w.HANDLE, w.LPCWSTR, P, P, P, w.BOOL, w.DWORD, P, w.LPCWSTR, P, P]
+    adv.ImpersonateLoggedOnUser.argtypes = [w.HANDLE]
 
     def check(ok, what):
         if not ok:
             raise OSError(f"{what} failed: {ctypes.WinError(ctypes.get_last_error())}")
 
-    token, restricted = w.HANDLE(), w.HANDLE()
-    # TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID
-    check(adv.OpenProcessToken(k32.GetCurrentProcess(), 0x2 | 0x8 | 0x1 | 0x80 | 0x100, ctypes.byref(token)),
-          "OpenProcessToken")
-    check(adv.CreateRestrictedToken(token, 0x4, 0, None, 0, None, 0, None, ctypes.byref(restricted)),   # LUA_TOKEN
-          "CreateRestrictedToken")
-
     class SidAndAttributes(ctypes.Structure):
         _fields_ = [("Sid", P), ("Attributes", w.DWORD)]
-    sid = P()
-    check(adv.ConvertStringSidToSidW("S-1-16-8192", ctypes.byref(sid)), "ConvertStringSidToSidW")   # medium
-    label = SidAndAttributes(sid, 0x20)      # SE_GROUP_INTEGRITY
-    check(adv.SetTokenInformation(restricted, 25, ctypes.byref(label),                 # TokenIntegrityLevel
-                                  ctypes.sizeof(label) + adv.GetLengthSid(sid)), "SetTokenInformation")
 
-    class StartupInfo(ctypes.Structure):
-        _fields_ = [("cb", w.DWORD), ("lpReserved", w.LPWSTR), ("lpDesktop", w.LPWSTR), ("lpTitle", w.LPWSTR),
-                    ("dwX", w.DWORD), ("dwY", w.DWORD), ("dwXSize", w.DWORD), ("dwYSize", w.DWORD),
-                    ("dwXCountChars", w.DWORD), ("dwYCountChars", w.DWORD), ("dwFillAttribute", w.DWORD),
-                    ("dwFlags", w.DWORD), ("wShowWindow", w.WORD), ("cbReserved2", w.WORD),
-                    ("lpReserved2", P), ("hStdInput", w.HANDLE), ("hStdOutput", w.HANDLE), ("hStdError", w.HANDLE)]
-
-    class ProcessInformation(ctypes.Structure):
-        _fields_ = [("hProcess", w.HANDLE), ("hThread", w.HANDLE), ("dwProcessId", w.DWORD), ("dwThreadId", w.DWORD)]
-
-    with open(output, "wb") as out, open(os.devnull, "rb") as nul:
-        h_out, h_in = msvcrt.get_osfhandle(out.fileno()), msvcrt.get_osfhandle(nul.fileno())
-        os.set_handle_inheritable(h_out, True)
-        os.set_handle_inheritable(h_in, True)
-        si = StartupInfo()
-        si.cb = ctypes.sizeof(si)
-        si.dwFlags = 0x100           # STARTF_USESTDHANDLES
-        si.hStdInput, si.hStdOutput, si.hStdError = h_in, h_out, h_out
-        pi = ProcessInformation()
-        block = "".join(f"{k}={v}\0" for k, v in sorted(env.items(), key=lambda kv: kv[0].upper())) + "\0"
-        env_buf = (ctypes.c_wchar * len(block))(*block)
-        cmd = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
-        check(adv.CreateProcessAsUserW(restricted, None, cmd, None, None, True, 0x400 | 0x08000000, env_buf,
-                                       str(cwd), ctypes.byref(si), ctypes.byref(pi)), "CreateProcessAsUserW")
-    k32.CloseHandle(pi.hThread)
-    for h in (restricted, token):
-        k32.CloseHandle(h)
-    return pi.hProcess
+    token, restricted = w.HANDLE(), w.HANDLE()
+    # TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_IMPERSONATE
+    check(adv.OpenProcessToken(k32.GetCurrentProcess(), 0x2 | 0x8 | 0x1 | 0x80 | 0x4, ctypes.byref(token)),
+          "OpenProcessToken")
+    try:
+        check(adv.CreateRestrictedToken(token, 0x4, 0, None, 0, None, 0, None, ctypes.byref(restricted)),  # LUA_TOKEN
+              "CreateRestrictedToken")
+        medium = P()
+        check(adv.ConvertStringSidToSidW("S-1-16-8192", ctypes.byref(medium)), "ConvertStringSidToSidW")
+        label = SidAndAttributes(medium, 0x20)      # SE_GROUP_INTEGRITY
+        check(adv.SetTokenInformation(restricted, 25, ctypes.byref(label),               # TokenIntegrityLevel
+                                      ctypes.sizeof(label) + adv.GetLengthSid(medium)), "SetTokenInformation")
+        check(adv.ImpersonateLoggedOnUser(restricted), "ImpersonateLoggedOnUser")
+        try:
+            yield
+        finally:
+            adv.RevertToSelf()
+    finally:
+        for h in (restricted, token):
+            if h:
+                k32.CloseHandle(h)
 
 
-def wait_handle(handle, timeout=120):
-    """Wait for a process started by start_unelevated and return its exit code."""
+def can_open_mutex(name):
+    """True if this thread's token may open (and so wait on) the named mutex."""
     from ctypes import wintypes as w
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
-    k32.GetExitCodeProcess.argtypes = [w.HANDLE, ctypes.POINTER(w.DWORD)]
-    k32.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
+    k32.OpenMutexW.restype = w.HANDLE
+    k32.OpenMutexW.argtypes = [w.DWORD, w.BOOL, w.LPCWSTR]
     k32.CloseHandle.argtypes = [w.HANDLE]
-    try:
-        if k32.WaitForSingleObject(handle, int(timeout * 1000)) != 0:
-            k32.TerminateProcess(handle, 1)
-            pytest.fail(f"the process didn't end in {timeout} s")
-        code = w.DWORD()
-        k32.GetExitCodeProcess(handle, ctypes.byref(code))
-        return code.value
-    finally:
+    handle = k32.OpenMutexW(0x00100000 | 0x0001, False, name)      # SYNCHRONIZE | MUTEX_MODIFY_STATE
+    if handle:
         k32.CloseHandle(handle)
+    return bool(handle)

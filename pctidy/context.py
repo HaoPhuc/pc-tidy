@@ -34,13 +34,14 @@ def _abs(path):
 
 class Context:
     def __init__(self, environ=None):
-        env = dict(os.environ if environ is None else environ)
+        # Windows environment names ignore case, and a copy of os.environ has them in upper case
+        env = {k.upper(): v for k, v in (os.environ if environ is None else environ).items()}
         self.env = env
 
         def get(*names, default=None):
             for name in names:
-                if env.get(name):
-                    return env[name]
+                if env.get(name.upper()):
+                    return env[name.upper()]
             return default
 
         self.profile = _abs(get("USERPROFILE", default=os.path.expanduser("~")))
@@ -80,7 +81,7 @@ class Context:
                           if e.name.lower().startswith("onedrive") and e.is_dir()]
             except OSError:
                 pass
-            found += [_abs(self.env[k]) for k in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
+            found += [_abs(self.env[k]) for k in ("ONEDRIVE", "ONEDRIVECONSUMER", "ONEDRIVECOMMERCIAL")
                       if self.env.get(k)]
             if not self.sandbox and norm(self.profile) == norm(os.path.expanduser("~")):
                 found += _shell_known_folders()      # where Windows says they are, e.g. moved to D:
@@ -98,7 +99,7 @@ class Context:
 
     def test_value(self, name):
         """A test hook from the environment, honoured only while the sandbox is set."""
-        return self.env.get(name) if self.sandbox else None
+        return self.env.get(name.upper()) if self.sandbox else None
 
 
 def current():

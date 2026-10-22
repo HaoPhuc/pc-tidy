@@ -168,11 +168,13 @@ def default_folder(ntfs_volume):
 @pytest.fixture
 def mounted_folder(ntfs_volume, profile):
     """The NTFS test volume, also mounted in a folder of the fake C: (like a second disk at C:\\Data)."""
-    from pctidy import volume
+    import ctypes
+    name = ctypes.create_unicode_buffer(100)       # mountvol wants it exactly as Windows writes it
+    if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(ntfs_volume.root, name, len(name)):
+        pytest.fail(f"no volume name for {ntfs_volume.root}: {ctypes.WinError()}")
     folder = profile / "Data"
     folder.mkdir()
-    made = subprocess.run(["mountvol", str(folder) + "\\", volume.volume_id(ntfs_volume.root)],
-                          capture_output=True, text=True)
+    made = subprocess.run(["mountvol", str(folder) + "\\", name.value], capture_output=True, text=True)
     if made.returncode:
         pytest.fail(f"mountvol couldn't mount the test volume in {folder}:\n{made.stdout}{made.stderr}")
     try:

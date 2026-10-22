@@ -137,6 +137,15 @@ def test_protection_table(fake, path, op, expected):
         assert problem and expected in problem, problem
 
 
+def test_the_context_reads_windows_variable_names_in_any_case(monkeypatch):
+    """A copy of os.environ has every name in upper case; Windows itself ignores case."""
+    ctx = Context({"systemdrive": "X:", "SYSTEMROOT": "X:\\Windows", "ProgramFiles": "X:\\Apps"})
+    assert (ctx.system_drive, ctx.system_root) == ("X:\\", "X:\\Windows")
+    assert "X:\\Apps" in ctx.program_files
+    monkeypatch.setenv("SystemDrive", "Y:")
+    assert Context().system_drive == "Y:\\"
+
+
 def test_check_raises_refused(fake):
     with pytest.raises(safety.Refused, match="is a whole drive"):
         safety.check("D:\\", "delete", context_for(fake))

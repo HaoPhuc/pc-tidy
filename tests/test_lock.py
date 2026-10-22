@@ -1,12 +1,11 @@
 """The lock: one run at a time per user, never held while anything waits for input."""
 
 import subprocess
-import time
 
 import pytest
 
 from pctidy import context, journal, lock
-from support import is_admin, snapshot, start_unelevated, wait_handle, write
+from support import as_normal_window, can_open_mutex, is_admin, snapshot, write
 
 HOLDER = r'''
 import os, sys, time
@@ -98,32 +97,36 @@ def test_an_uninstaller_waiting_for_input_holds_no_lock(run, profile, tmp_path):
 
 
 @pytest.mark.skipif(not is_admin(), reason="needs an elevated window to compare with a normal one")
-def test_an_elevated_and_a_normal_window_of_the_same_user_exclude_each_other(run, profile, tmp_path):
-    holder_py, stop = write(tmp_path / "holder.py", HOLDER), tmp_path / "stop"
-    sort_args = ["tidy_folder.py", ["--source", profile / "Downloads", "--dest", tmp_path / "Sorted", "--no-llm",
-                                    "--apply"]]
+def test_an_elevated_and_a_normal_window_of_the_same_user_share_the_lock(run, profile, tmp_path):
+    ctx = context.current()
+    name = lock.lock_name(ctx)
 
-    # the elevated window holds the lock, a normal one runs the weekly sort
-    holder = run.start(holder_py, stop)
+    # an elevated window holds it: a normal window can open it, so it waits, and can't take it
+    holder = run.start(write(tmp_path / "holder.py", HOLDER))
     holder.wait_for("holding elevated=True")
-    out = tmp_path / "normal-sort.txt"
-    code = wait_handle(start_unelevated(run._argv(*sort_args), run.command_env(QUICK), run.work, out))
-    write(stop, b"")
+    with as_normal_window():
+        assert can_open_mutex(name)
+        with pytest.raises(lock.Busy):
+            lock.Lock(ctx, "normal window").acquire(wait=1)
     assert holder.finish() == 0
-    assert code == lock.BUSY_EXIT, out.read_text(encoding="utf-8", errors="replace")
 
-    # and the other way round
-    stop.unlink()
-    out = tmp_path / "normal-holder.txt"
-    handle = start_unelevated(run._argv(holder_py, [stop]), run.command_env(), run.work, out)
+    # a normal window holds it: the elevated weekly sort waits, then exits 4
+    with as_normal_window():
+        held = lock.Lock(ctx, "normal window").acquire(wait=1)
     try:
-        for _ in range(600):
-            if "holding" in out.read_text(encoding="utf-8", errors="replace"):
-                break
-            time.sleep(0.1)
-        assert "holding elevated=False" in out.read_text(encoding="utf-8", errors="replace")
         result = weekly_sort(run, profile, tmp_path, env=QUICK)
     finally:
-        write(stop, b"")
-        assert wait_handle(handle) == 0
+        held.release()
     assert result.returncode == lock.BUSY_EXIT, result.output
+    assert "Waiting for another pc-tidy run (normal window, started " in result.stdout
+
+    # the control: without pc-tidy's security descriptor, a normal window couldn't even open it
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    plain = kernel32.CreateMutexW(None, False, name + "-control")
+    try:
+        with as_normal_window():
+            assert not can_open_mutex(name + "-control")
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(plain))
