@@ -117,8 +117,12 @@ class Lock:
 
     def _write_info(self):
         info = {"command": self.command, "pid": os.getpid(), "started": time.strftime("%H:%M")}
+        try:      # the data folder at most, never its parents: those it may not even be able to see
+            if not os.path.isdir(lp(self.ctx.data_dir)):
+                os.mkdir(lp(self.ctx.data_dir))
+        except OSError:
+            pass
         try:
-            os.makedirs(self.ctx.data_dir, exist_ok=True)
             with open(lp(self.ctx.folder("lock-info.json")), "w", encoding="utf-8") as f:
                 json.dump(info, f)
         except OSError:
