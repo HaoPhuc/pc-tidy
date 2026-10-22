@@ -47,9 +47,12 @@ def test_apply_moves_files_by_their_extension(run, profile, tmp_path):
         assert not (downloads / name).exists()
         assert (sorted_dir / target).read_bytes() == data[name]
     assert sorted(p.name for p in downloads.iterdir()) == sorted(LEFT_ALONE)
-    logs = list((sorted_dir / "_logs").glob("run_*.json"))
-    assert len(logs) == 1
-    assert len(json.loads(logs[0].read_text(encoding="utf-8"))) == len(EXPECTED)
+    # since M2 the record is pc-tidy's journal in its data folder, not _logs in the sorted folder,
+    # which can be a OneDrive-synced Desktop (problem 16)
+    assert not (sorted_dir / "_logs").exists()
+    (journal_file,) = (profile / "AppData" / "Local" / "pc-tidy" / "runs").glob("*.jsonl")
+    lines = [json.loads(line) for line in journal_file.read_text(encoding="utf-8").splitlines() if line]
+    assert len([r for r in lines if r["t"] == "done"]) == len(EXPECTED)
 
 
 def test_undo_puts_back_the_exact_tree(run, profile, tmp_path):
@@ -62,8 +65,12 @@ def test_undo_puts_back_the_exact_tree(run, profile, tmp_path):
     assert applied.returncode == 0 and undone.returncode == 0, applied.output + undone.output
     assert f"Put back {len(EXPECTED)} items" in undone.stdout
     assert snapshot(downloads) == before          # names, sizes and modified times
-    assert [p.name for p in sorted_dir.iterdir()] == ["_logs"]     # the emptied category folders are gone
-    assert len(list((sorted_dir / "_logs").glob("run_*.undone"))) == 1
+    # the folders the run made are gone once the undo emptied them, Sorted itself included (since M2
+    # there is no _logs folder in it to keep it)
+    assert not sorted_dir.exists()
+
+    again = run.python("tidy_folder.py", "--source", downloads, "--dest", sorted_dir, "--undo")
+    assert "Nothing to undo." in again.stdout
 
 
 def test_in_place_sorts_inside_the_folder_and_undoes(run, profile):
