@@ -1,7 +1,9 @@
-"""Rules that recognize folders and apps. Used by disk_report.py and move_off_c.py.
+"""Rules that recognize folders and apps. Used by disk_report.py.
 
 All folder patterns are regexes on the lowercase path with forward slashes,
-e.g. c:/users/me/appdata/local/temp. Edit the lists to teach the tools about your own PC.
+e.g. c:/users/me/appdata/local/temp. These are the built-in rules. To teach the tools about your
+own PC, add [label.*], [category.*] and [apptype.*] sections to settings.ini instead of editing
+this file: use_rules() puts them before the built-in ones, so they can also change a built-in answer.
 """
 
 import re
@@ -88,11 +90,22 @@ _RULES = [
 ]
 RULES = [Rule(re.compile(p), what, todo, kind, expand) for p, what, todo, kind, expand in _RULES]
 
+# your own rules from settings.ini ([label.*], [category.*], [apptype.*]), checked first
+USER_RULES, USER_CATEGORY_RULES, USER_APP_RULES = [], [], []
+
+
+def use_rules(rules):
+    """Use your own rules (pctidy.settings Rule objects, from Settings.good_rules()) before the built-in ones."""
+    USER_RULES[:] = [Rule(r.fields["pattern"], r.fields["what"], r.fields["todo"], r.fields["kind"],
+                          r.fields["expand"]) for r in rules if r.kind == "label"]
+    USER_CATEGORY_RULES[:] = [(r.fields["pattern"], r.fields["category"]) for r in rules if r.kind == "category"]
+    USER_APP_RULES[:] = [(r.fields["type"], r.fields["match"]) for r in rules if r.kind == "apptype"]
+
 
 def known(path):
-    """The first RULES entry that matches a path, or None."""
+    """The first rule (yours, then RULES) that matches a path, or None."""
     p = norm(path)
-    for rule in RULES:
+    for rule in USER_RULES + RULES:
         if rule.pattern.search(p):
             return rule
     return None
@@ -144,7 +157,7 @@ def folder_categories(scan):
 
     def resolve(folder, parent_cat):
         n = norm(folder)
-        for pattern, cat in CATEGORY_RULES:
+        for pattern, cat in USER_CATEGORY_RULES + CATEGORY_RULES:
             if pattern.search(n):
                 return cat
         return parent_cat
@@ -208,7 +221,7 @@ APP_RULES = [(t, re.compile(p)) for t, p in _APP_RULES]
 def app_type(name, publisher=""):
     """App type from keyword rules, or None if no rule matches."""
     text = f"{name} | {publisher}".lower()
-    for app_t, pattern in APP_RULES:
+    for app_t, pattern in USER_APP_RULES + APP_RULES:
         if pattern.search(text):
             return app_t
     return None

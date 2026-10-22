@@ -12,3 +12,8 @@ _logs/
 !requirements.txt
 !requirements-dev.txt
 disk_report*.pdf
+
+# your settings (made from settings.template.ini on first run)
+settings.ini
+settings.before-import-*.ini
+settings.ini.new

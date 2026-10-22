@@ -173,6 +173,11 @@ def render(data, path):
     story.append(P("Disk report", "title"))
     story.append(P(t(f"{data['computer']}   {data['generated']}   "
                      f"{s['files']:,} files ({gb(s['bytes'])}) scanned in {s['seconds']:.0f} s"), "sub"))
+    if data.get("settings_problems"):
+        story.append(P("<b>settings.ini has mistakes.</b> This report used the defaults for them and skipped "
+                       "broken rules. Fix them with: python pc_tidy.py settings edit", "body"))
+        story += [Paragraph(t(p), S["bullet"], bulletText="\u2022" if UNICODE else "-")
+                  for p in data["settings_problems"]]
 
     # --- drives and summary ---
     story.append(drive_meters(data["drives"]))

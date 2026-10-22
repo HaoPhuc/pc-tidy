@@ -152,7 +152,7 @@ python tidy_folder.py --apply       # moves files into C:\Users\<you>\Sorted
 python tidy_folder.py --undo        # puts the last run back
 ```
 
-- **Rules handle most files by extension.** Images go to `Pictures`, installers to `To-Delete`, and so on. The `Installers` setting in `cleanup.ps1` deletes them, since once an app is installed you don't need its installer. Files older than 60 days go under `Sorted\Archive`.
+- **Rules handle most files by extension.** Images go to `Pictures`, installers to `To-Delete`, and so on. The `Installers` setting in `cleanup.ps1` deletes them, since once an app is installed you don't need its installer. Files older than 60 days go under `Sorted\Archive`. The folders, the rules and the 60 days are in `settings.ini` (see [Settings](#settings)).
 - **The local AI handles the rest.** PDFs, Word docs and unknown types are sorted into `Coursework`, `Research papers`, `Projects and code`, `Admin and receipts`, `Work`, `Personal`, `Software` or `Other`, and get a clearer name.
 - **Some files are left alone:** shortcuts, and files still downloading or changed in the last 10 minutes.
 
@@ -177,18 +177,69 @@ Register-ScheduledTask -TaskName "pc-tidy Downloads" -Action $action -Trigger $t
 
 It runs while you are logged in. Every run is logged, so `python tidy_folder.py --undo` still works. To remove the task, run `Unregister-ScheduledTask -TaskName "pc-tidy Downloads"`.
 
+If a run can't do its work, for example because of a mistake in the `[tidy]` part of `settings.ini`, it says so the next time you run `python pc_tidy.py status`, and Task Scheduler shows its exit code as the task's "Last Run Result".
+
 ---
 
-## Customizing
+## Settings
 
-| File | What to change |
-|---|---|
-| `llm.py` | `MODEL`: any Ollama model, for example a bigger one like `qwen2.5:7b` for better descriptions |
-| `classify.py` | `_RULES` (recognized folders and advice), `_CATEGORY_RULES` (which folder counts as which category), `_APP_RULES` (app types by keyword) |
-| `disk_report.py` | `MIN_GB` and `MAX_DEPTH` for the folder tree, how many items the AI describes |
-| `cleanup.ps1` | The SETTINGS block |
-| `move_off_c.py` | `MIN_GB`, `DEST_FOLDER_NAME` |
-| `tidy_folder.py` | `SOURCE`, `DEST`, `RULES` (extension to folder), `CATEGORIES` (folders the AI picks from), `ARCHIVE_AFTER_DAYS` |
+All settings are in one file, `settings.ini` in the pc-tidy folder. pc-tidy makes it from `settings.template.ini` the first time a tool runs, and every line in it has a comment that says what it does.
+
+```powershell
+python pc_tidy.py settings edit    # opens settings.ini in Notepad, and checks it when you close Notepad
+python pc_tidy.py settings check   # lists every mistake, with its line number
+python pc_tidy.py settings show    # shows every value and where it came from
+```
+
+| Section | Used by | What's in it |
+|---|---|---|
+| `[report]` | `disk_report.py` | `min_gb` and `max_depth` for the folder tree, `top_files`, `cleanup_min_gb` |
+| `[ai]` | `tidy_folder.py`, `disk_report.py` | `enabled`, `model` (any Ollama model, for example a bigger one like `qwen2.5:7b` for better descriptions), `url` (only this PC is allowed), `timeout_seconds`, how many folders and apps the AI describes |
+| `[move]` | `move_off_c.py` | `min_gb`, `dest_folder_name` |
+| `[tidy]` | `tidy_folder.py` and the weekly task | `source`, `dest`, `archive_after_days`, `skip_newer_than_min`, `rename_with_ai`, `categories` (the folders the AI picks from) |
+| `[tidy.extensions]` | `tidy_folder.py` and the weekly task | `extension = folder`, for example `.pdf = Papers` |
+| `[cleanup]` | `cleanup.ps1`, from the next version | The same switches and lists as the SETTINGS block in `cleanup.ps1`. Until then, `cleanup.ps1` still uses its own block (step 5). |
+| `[label.<name>]`, `[category.<name>]`, `[apptype.<name>]` | `disk_report.py` | Your own rules, instead of editing `classify.py` (below) |
+
+How to write it:
+- One `key = value` per line. A list has one item per line, indented under its key. Lines starting with `#` are comments.
+- `%USERPROFILE%` and other `%NAME%` variables are filled in, and a backslash is just a backslash: `C:\new` is the folder `C:\new`.
+- An option on the command line wins over `settings.ini`, for example `--source` or `--min-gb`. A line you delete uses its default.
+- **A mistake stops only the tools that read its section.** A typo in `[tidy]` stops `tidy_folder.py` with the line number, but not `move_off_c.py`. A mistake in `[ai]` makes `tidy_folder.py` sort by its rules only. `disk_report.py` never stops: it uses the default for a broken value, skips a broken rule, and says so at the top of the report.
+
+**Your own rules** for the disk report each go in a section of their own. They are checked before the built-in ones, so they can also change a built-in answer. Patterns are regular expressions on the path in lower case with forward slashes:
+
+```ini
+[label.old-games]
+pattern = ^[a-z]:/games/old$
+what = Old game installers
+todo = Delete the ones you have finished
+kind = clean
+
+[category.lab-data]
+pattern = ^d:/lab$
+category = Personal files
+
+[apptype.cad]
+match = onshape|rhino
+type = Dev & science tools
+```
+
+`kind = clean` lists the folder under "Things you can clean up", `kind = info` under "Good to know". The allowed categories and app types are listed in the comments at the end of `settings.ini`.
+
+## Upgrading from a version before 2.0
+
+Before 2.0 the settings were inside the scripts, so your edited `cleanup.ps1` and `.py` files would block `git pull`. Instead:
+
+1. Rename your `pc-tidy` folder to `pc-tidy-old`.
+2. Clone a fresh copy, as in step 2 of the walkthrough.
+3. In the new folder, run:
+
+```powershell
+python pc_tidy.py settings import ..\pc-tidy-old
+```
+
+It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of the old `.py` files and your changes to `classify.py`, without running any of them. It lists every value it would import and writes `settings.ini` only after you type `yes`. A value that pc-tidy 2.0 refuses is listed with the reason and left out (for example a path inside Program Files in `$ExtraPathsToDelete`), and so is any line it can't read. In this version `cleanup.ps1` still reads its own SETTINGS block, so copy that block into the new `cleanup.ps1` too.
 
 ## Troubleshooting
 
@@ -201,16 +252,17 @@ It runs while you are logged in. Every run is logged, so `python tidy_folder.py 
 | `Ollama isn't running` | Start Ollama from the Start menu. The scripts still work without it, just without the AI parts. |
 | `Model llama3.2:3b not found` | `ollama pull llama3.2:3b` |
 | `No other drive found` (move_off_c.py) | Pass a destination yourself, for example `--to D:\From-C`. |
+| `... didn't start: settings.ini has a mistake` | Run `python pc_tidy.py settings edit`, fix the line it names, and close Notepad. It checks the file again. |
 | `conda` not found in Git Bash | Run `conda init bash` once in PowerShell, then reopen Git Bash. Or just use PowerShell. |
 | `N folders could not be opened` | Run PowerShell as administrator. A few system folders stay locked even then, which is normal. |
 | The `C:\Windows` size looks too big | Windows uses hard links, so files get counted more than once. Clean it only with Disk Cleanup > *Clean up system files*. |
 
 ## How it works
 
-- **Rules first, AI second.** Plain rules in `classify.py` handle everything predictable. The AI is used only where rules can't decide: reading a PDF to sort it, sorting a whole folder, naming the type of an unfamiliar app, or describing an unfamiliar folder.
+- **Rules first, AI second.** Plain rules in `classify.py` (plus your own in `settings.ini`) handle everything predictable. The AI is used only where rules can't decide: reading a PDF to sort it, sorting a whole folder, naming the type of an unfamiliar app, or describing an unfamiliar folder.
 - **The AI never decides what gets deleted.** Its descriptions are labeled as guesses, and `cleanup.ps1` only does what you switch on.
 - **Small and local.** `llama3.2:3b` runs on most laptops without a GPU and nothing is sent online.
-- **Files:** `scanner.py` walks the drives, `classify.py` holds the rules, `pdf_report.py` draws the PDF, and `llm.py` talks to Ollama.
+- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and `pctidy\settings.py` reads `settings.ini`.
 
 ## License
 

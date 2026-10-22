@@ -14,12 +14,18 @@ Usage:
 Setup (once):
     1. Install Ollama from https://ollama.com, then in a terminal:  ollama pull llama3.2:3b
     2. pip install -r requirements.txt
-    The model is set in llm.py.
+
+Settings are in settings.ini (python pc_tidy.py settings edit): [tidy] has the folders, the archive
+age and the AI's categories, [tidy.extensions] the folder for each extension, and [ai] the model.
+--source and --dest win over the folders there.
 
 It never waits for input (the weekly task runs it with nobody watching) and never deletes anything.
 Every move is recorded in pc-tidy's data folder (%LOCALAPPDATA%\pc-tidy\runs) before it happens, so
 --undo works even after a crash. Exit codes: 0 done, 1 refused or nothing could be recorded,
-3 something was skipped (also kept as a notice: python pc_tidy.py status), 4 another run was busy.
+2 a mistake in [tidy] or [tidy.extensions] of settings.ini (nothing is sorted: sorting with defaults
+could file things where you didn't ask), 3 something was skipped, 4 another run was busy. With
+--apply, 2, 3 and 4 are also kept as a notice (python pc_tidy.py status). A mistake in [ai] only
+makes it sort by the rules, as with --no-llm, with a notice too.
 """
 
 import argparse
@@ -28,65 +34,41 @@ import os
 import re
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 import llm
-from pctidy import context, executor, journal, lock, recovery, safety, ui
+from pctidy import context, executor, journal, lock, recovery, safety, settings, ui
 from pctidy import undo as undo_core
 from pctidy.paths import inside
 from pctidy.plan import Plan
 
-# ---------------- settings: edit these ----------------
-SOURCE = Path.home() / "Downloads"
-DEST = Path.home() / "Sorted"
-
-ARCHIVE_AFTER_DAYS = 60     # files older than this go under <dest>/Archive/<folder>. None to disable
-SKIP_NEWER_THAN_MIN = 10    # leave very recent files alone (they may still be downloading)
-RENAME_WITH_LLM = True      # let the LLM give LLM-sorted files a clearer name
-
-# extension -> folder. Anything not listed here is sent to the LLM.
-RULES = {
-    # installers (cleanup.ps1 deletes them, setting: Installers)
-    ".exe": "To-Delete", ".msi": "To-Delete", ".msix": "To-Delete",
-    # images
-    ".jpg": "Pictures", ".jpeg": "Pictures", ".png": "Pictures", ".gif": "Pictures",
-    ".webp": "Pictures", ".heic": "Pictures", ".bmp": "Pictures", ".svg": "Pictures",
-    # video and audio
-    ".mp4": "Videos", ".mov": "Videos", ".mkv": "Videos", ".avi": "Videos",
-    ".mp3": "Music", ".wav": "Music", ".flac": "Music", ".m4a": "Music",
-    # compressed
-    ".zip": "Archives", ".rar": "Archives", ".7z": "Archives", ".tar": "Archives", ".gz": "Archives",
-    # code and data
-    ".py": "Code", ".ipynb": "Code", ".m": "Code", ".c": "Code", ".cpp": "Code", ".h": "Code", ".js": "Code",
-    ".csv": "Data", ".json": "Data", ".mat": "Data", ".xlsx": "Data", ".xls": "Data",
-    # slides and 3D
-    ".pptx": "Slides", ".ppt": "Slides",
-    ".stl": "3D models", ".step": "3D models", ".stp": "3D models", ".blend": "3D models",
-}
-
-# folders the LLM chooses from (PDFs, Word docs, text files, unknown types, and whole folders)
-CATEGORIES = [
-    "Coursework",
-    "Research papers",
-    "Projects and code",
-    "Admin and receipts",
-    "Work",
-    "Personal",
-    "Software",
-    "Other",
-]
-
 SKIP_SUFFIXES = {".crdownload", ".part", ".partial", ".download", ".tmp",
                  ".lnk", ".url"}     # shortcuts stay where they are (Desktop)
 SKIP_NAMES = {"desktop.ini", "thumbs.db"}
-# -------------------------------------------------------
+SECTIONS = ("tidy", "tidy.extensions")      # a mistake in these stops the sort (exit 2)
 
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
 
-# folders this script creates; never sorted again when sorting in place
-OUR_FOLDERS = {name.lower() for name in list(RULES.values()) + CATEGORIES + ["Archive", "_logs"]}
+# what a sort is built under, from [tidy] and [tidy.extensions]:
+#   rules: extension -> folder (anything not listed goes to the LLM); categories: the folders the LLM
+#   chooses from; archive_after_days: older files go under <dest>/Archive/<folder> (0 = never);
+#   skip_newer_than_min: very recent files are left alone (they may still be downloading)
+Options = namedtuple("Options", "rules categories archive_after_days skip_newer_than_min rename_with_llm")
+
+
+def options(cfg=None):
+    cfg = cfg or settings.load()
+    t = cfg.section("tidy")
+    return Options(cfg.table("tidy.extensions"), t.categories, t.archive_after_days, t.skip_newer_than_min,
+                   t.rename_with_ai)
+
+
+def our_folders(opts):
+    """Folders this script creates; never sorted again when sorting in place."""
+    return {name.lower() for name in list(opts.rules.values()) + opts.categories + ["Archive", "_logs"]}
 
 
 def read_snippet(path, limit=1500):
@@ -108,18 +90,18 @@ def read_snippet(path, limit=1500):
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
-def ask_llm(path, snippet):
+def ask_llm(path, snippet, categories):
     schema = {
         "type": "object",
         "properties": {
-            "category": {"type": "string", "enum": CATEGORIES},
+            "category": {"type": "string", "enum": categories},
             "new_name": {"type": "string"},
         },
         "required": ["category", "new_name"],
     }
     prompt = (
         "You sort files from a messy folder.\n"
-        f"Pick the best category from: {', '.join(CATEGORIES)}.\n"
+        f"Pick the best category from: {', '.join(categories)}.\n"
         "Also suggest a short, clear filename without extension (words joined by underscores, "
         "max 60 characters). Keep the original name if it is already clear.\n\n"
         f"Filename: {path.name}\n"
@@ -127,7 +109,7 @@ def ask_llm(path, snippet):
     )
     answer = llm.ask_json(prompt, schema)
     category = answer.get("category")
-    return (category if category in CATEGORIES else "Other"), answer.get("new_name", "")
+    return (category if category in categories else "Other"), answer.get("new_name", "")
 
 
 def folder_sample(folder, limit=25):
@@ -146,19 +128,19 @@ def folder_sample(folder, limit=25):
     return names, count, size
 
 
-def ask_llm_folder(folder):
+def ask_llm_folder(folder, categories):
     names, count, size = folder_sample(folder)
-    schema = {"type": "object", "properties": {"category": {"type": "string", "enum": CATEGORIES}},
+    schema = {"type": "object", "properties": {"category": {"type": "string", "enum": categories}},
               "required": ["category"]}
     prompt = (
         "You sort folders from a messy folder into categories.\n"
-        f"Pick the best category from: {', '.join(CATEGORIES)}.\n\n"
+        f"Pick the best category from: {', '.join(categories)}.\n\n"
         f"Folder name: {folder.name}\n"
         f"It has {count} files, {size / 1024 ** 2:.0f} MB. Some of them:\n"
         + "\n".join(f"- {n}" for n in names) + "\n"
     )
     category = llm.ask_json(prompt, schema).get("category")
-    return category if category in CATEGORIES else "Other"
+    return category if category in categories else "Other"
 
 
 def clean_name(suggested, original):
@@ -180,7 +162,8 @@ def is_hidden(path):
     return bool(getattr(path.stat(), "st_file_attributes", 0) & 2)  # Windows hidden flag
 
 
-def plan_moves(source, dest, use_llm, folders=False):
+def plan_moves(source, dest, use_llm, folders=False, opts=None):
+    opts = opts or options()
     now = time.time()
     moves, taken = [], set()
     in_place = source.resolve() == dest.resolve()
@@ -191,26 +174,26 @@ def plan_moves(source, dest, use_llm, folders=False):
         if ext in SKIP_SUFFIXES or f.name.lower() in SKIP_NAMES or f.name.startswith("~$") or is_hidden(f):
             continue
         age_days = (now - f.stat().st_mtime) / 86400
-        if age_days * 1440 < SKIP_NEWER_THAN_MIN:
+        if age_days * 1440 < opts.skip_newer_than_min:
             continue
 
         new_name = f.name
-        if ext in RULES:
-            folder = RULES[ext]
+        if ext in opts.rules:
+            folder = opts.rules[ext]
         elif use_llm:
             print(f"  asking LLM about {f.name} ...")
             try:
-                folder, suggestion = ask_llm(f, read_snippet(f))
+                folder, suggestion = ask_llm(f, read_snippet(f), opts.categories)
             except Exception as e:
                 print(f"    LLM failed ({e}), leaving it in place")
                 continue
-            if RENAME_WITH_LLM and suggestion:
+            if opts.rename_with_llm and suggestion:
                 new_name = clean_name(suggestion, f)
         else:
             continue  # no LLM: leave it for a later run
 
         base = dest
-        if folder != "To-Delete" and ARCHIVE_AFTER_DAYS and age_days > ARCHIVE_AFTER_DAYS:
+        if folder != settings.INSTALLER_FOLDER and opts.archive_after_days and age_days > opts.archive_after_days:
             base = dest / "Archive"
         target = unique(base / folder / new_name, taken)
         taken.add(target)
@@ -223,11 +206,11 @@ def plan_moves(source, dest, use_llm, folders=False):
         for d in (p for p in entries if p.is_dir()):
             if d.name.startswith(".") or is_hidden(d) or d.resolve() == dest.resolve():
                 continue
-            if in_place and d.name.lower() in OUR_FOLDERS:
+            if in_place and d.name.lower() in our_folders(opts):
                 continue   # a folder this script made on an earlier run
             print(f"  asking LLM about folder {d.name} ...")
             try:
-                category = ask_llm_folder(d)
+                category = ask_llm_folder(d, opts.categories)
             except Exception as e:
                 print(f"    LLM failed ({e}), leaving it in place")
                 continue
@@ -240,17 +223,18 @@ def plan_moves(source, dest, use_llm, folders=False):
 COMMAND = "tidy_folder"
 
 
-def settings():
+def plan_settings(opts):
     """What a plan was built under: the executor refuses a plan whose settings changed since."""
-    return {"rules": RULES, "categories": CATEGORIES, "archive_after_days": ARCHIVE_AFTER_DAYS,
-            "skip_newer_than_min": SKIP_NEWER_THAN_MIN, "rename_with_llm": RENAME_WITH_LLM}
+    return {"rules": opts.rules, "categories": opts.categories, "archive_after_days": opts.archive_after_days,
+            "skip_newer_than_min": opts.skip_newer_than_min, "rename_with_llm": opts.rename_with_llm}
 
 
-def build_plan(moves, source, dest, ctx=None):
+def build_plan(moves, source, dest, ctx=None, opts=None):
     """The exact list for the executor, with each item's fingerprint taken now, at the dry run.
     Items the safety check refuses are left out, with a line saying why."""
     ctx = ctx or context.current()
-    plan = Plan(COMMAND, ctx, settings(), info={"source": str(source), "dest": str(dest)})
+    opts = opts or options(settings.load(ctx))
+    plan = Plan(COMMAND, ctx, plan_settings(opts), info={"source": str(source), "dest": str(dest)})
     for src, dst in moves:
         problem = safety.why_refused(src, "move", ctx) or safety.why_refused(dst, "move-to", ctx)
         if problem:
@@ -275,7 +259,8 @@ def _notice(ctx, message, **details):
 
 def run_plan(plan, ctx, waiting=()):
     try:
-        result = executor.execute(plan, ctx, settings=settings())
+        # read again: if settings.ini changed since the dry run, the executor refuses the plan
+        result = executor.execute(plan, ctx, settings=plan_settings(options(settings.load(ctx))))
     except lock.Busy:
         print(lock.BUSY_MESSAGE)
         _notice(ctx, f"The sort of {plan.info.get('source')} didn't run: another pc-tidy run was busy.")
@@ -329,20 +314,62 @@ def undo(dest, ctx=None):
     return 3 if out.kept else 0
 
 
+def _given(path):
+    return Path(os.path.expandvars(str(path))).expanduser()
+
+
+def _ai_ready(cfg, ctx, unattended):
+    """True if the LLM may be used: [ai] has no mistake (else rules only, with a notice), it is
+    switched on, and Ollama answers."""
+    problems = cfg.errors("ai")
+    if problems:
+        print(f"{cfg.name} has a mistake in [ai], so files are sorted by the rules only (as with --no-llm):")
+        for p in problems:
+            print(f"  {cfg.describe(p)}")
+        if unattended:
+            _notice(ctx, f"The sort on {time.strftime('%Y-%m-%d')} used the rules only, without the AI: "
+                         f"{cfg.describe(problems[0])}. Fix it with: python pc_tidy.py settings edit")
+        return False
+    ai = cfg.section("ai")
+    if not ai.enabled:
+        print(f"The AI is switched off in {cfg.name} ([ai] enabled = no).")
+        return False
+    llm.configure(ai)
+    return llm.available()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Sort a messy folder into subfolders.")
     ap.add_argument("--apply", action="store_true", help="actually move files")
     ap.add_argument("--undo", action="store_true", help="revert the last --apply run")
     ap.add_argument("--no-llm", action="store_true", help="rules only, skip the LLM")
-    ap.add_argument("--source", type=Path, default=SOURCE, help="folder to sort (default: Downloads)")
-    ap.add_argument("--dest", type=Path, default=DEST, help="where sorted folders go (default: ~/Sorted)")
+    ap.add_argument("--source", type=Path,
+                    help="folder to sort (default: [tidy] source in settings.ini, normally Downloads)")
+    ap.add_argument("--dest", type=Path,
+                    help="where sorted folders go (default: [tidy] dest in settings.ini, normally ~/Sorted)")
     ap.add_argument("--in-place", action="store_true", help="put the sorted folders inside the source folder")
     ap.add_argument("--folders", action="store_true", help="also sort whole subfolders (needs the LLM)")
     args = ap.parse_args()
 
     ctx = context.current()
-    source = Path(os.path.expandvars(str(args.source))).expanduser()
-    dest = source if args.in_place else Path(os.path.expandvars(str(args.dest))).expanduser()
+    cfg = settings.load(ctx, create=True)
+    for note in cfg.notes:
+        print(note)
+    if args.undo:      # it only needs the folder it puts things back from
+        given = args.source if args.in_place else args.dest
+        problems = [] if given else cfg.key_errors("tidy", "source" if args.in_place else "dest")
+    else:
+        problems = cfg.errors(*SECTIONS)
+    if problems:       # sorting with defaults instead could file things where you didn't ask
+        print(settings.refusal(cfg, problems, "tidy_folder.py"))
+        if args.apply:
+            more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
+            _notice(ctx, f"The sort didn't run on {time.strftime('%Y-%m-%d')}: {cfg.describe(problems[0])}{more}. "
+                         "Fix it with: python pc_tidy.py settings edit")
+        return settings.EXIT
+    opts, folders = options(cfg), cfg.section("tidy")
+    source = _given(args.source) if args.source else Path(folders.source)
+    dest = source if args.in_place else _given(args.dest) if args.dest else Path(folders.dest)
 
     if args.undo:
         return undo(dest, ctx)
@@ -376,15 +403,15 @@ def main():
             _notice(ctx, "An interrupted move is waiting for your decision. Run: python pc_tidy.py recover",
                     paths=blocked)
 
-    use_llm = not args.no_llm and llm.available()
+    use_llm = not args.no_llm and _ai_ready(cfg, ctx, args.apply)
     if not args.no_llm and not use_llm:
         print("Files that need the LLM will be left in place.\n")
-    moves = [(src, dst) for src, dst in plan_moves(source, dest, use_llm, folders=args.folders)
+    moves = [(src, dst) for src, dst in plan_moves(source, dest, use_llm, folders=args.folders, opts=opts)
              if not any(inside(p, b) or inside(b, p) for p in (src, dst) for b in blocked)]
     if not moves:
         print("Nothing to sort.")
         return 3 if waiting else 0
-    plan = build_plan(moves, source, dest, ctx)
+    plan = build_plan(moves, source, dest, ctx, opts)
 
     print()
     for a in plan.actions:
