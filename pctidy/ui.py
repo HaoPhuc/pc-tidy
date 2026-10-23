@@ -14,3 +14,10 @@ def ask(prompt):
 def ask_yes(prompt="Type yes to continue: "):
     """True only for 'yes'."""
     return (ask(prompt) or "").strip().lower() == "yes"
+
+
+def examples(doc):
+    """The end of a command's --help: the examples from the Usage block of its docstring."""
+    usage = doc.split("Usage:", 1)[1].split("\n\n", 1)[0] if "Usage:" in doc else ""
+    return (f"examples:{usage}\n\nAdd --debug to see the details if something goes wrong. "
+            "Everything pc-tidy writes for itself is in %LOCALAPPDATA%\\pc-tidy.")

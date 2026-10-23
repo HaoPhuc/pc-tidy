@@ -43,3 +43,20 @@ jobs:
           Install-Module Pester -MinimumVersion 5.5.0 -MaximumVersion 5.999 -Force -SkipPublisherCheck -Scope CurrentUser
           Import-Module Pester -MinimumVersion 5.5.0
           Invoke-Pester tests\ps -CI
+
+  setup:
+    name: setup.cmd on a clean runner (twice)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: First run
+        shell: cmd
+        run: setup.cmd -NonInteractive
+      - name: Second run (safe to run again)
+        shell: cmd
+        run: setup.cmd -NonInteractive
+      - name: Self-test with the .venv it made
+        run: .venv\Scripts\python.exe pc_tidy.py selftest

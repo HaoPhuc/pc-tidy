@@ -21,10 +21,10 @@ import glob
 import os
 import re
 import shutil
-import sys
 import time
 
 from . import _win, context, safety
+from .progress import Line
 from .paths import inside, lp, norm
 
 GB = 1024 ** 3
@@ -524,10 +524,11 @@ def build(scan, cfg, ctx=None, move=None, progress=True, leftovers=None):
         out["notes"].append(f"Only part of {drive} was scanned ({', '.join(scan.roots)}), so this list may miss "
                             "things.")
 
+    line = Line() if progress else None
+
     def step(what):
-        if progress:
-            sys.stderr.write(f"\r  measuring {what[:50]} ...{' ' * 20}")
-            sys.stderr.flush()
+        if line:
+            line.show(f"measuring the fixes: {what} ...", force=True)
 
     fixes = []
     step("caches and temp files")
@@ -543,8 +544,8 @@ def build(scan, cfg, ctx=None, move=None, progress=True, leftovers=None):
     fixes += move_fixes(move)
     fixes += [duplicate_fix(leftovers, ctx)] + rebuildable_fixes(leftovers, ctx)
     fixes += [hibernation_fix(ctx, cfg), recycle_bin_fix(ctx, cfg), windows_old_fix(scan, ctx)]
-    if progress:
-        sys.stderr.write("\r" + " " * 78 + "\r")
+    if line:
+        line.clear()
 
     fixes = [f for f in fixes if f is not None]
     _dedupe(fixes)

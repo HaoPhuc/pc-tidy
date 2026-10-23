@@ -12,6 +12,15 @@ Find out what is filling up your Windows PC, clean it up safely, move big files 
 
 Made for Windows 10 and 11.
 
+## Quick start
+
+1. Install **Python 3.9 or newer** from [python.org](https://www.python.org/downloads/windows/). In the installer, tick **"Add python.exe to PATH"**. For the AI descriptions (optional), also install [Ollama](https://ollama.com).
+2. Get pc-tidy: on [GitHub](https://github.com/HaoPhuc/pc-tidy), click *Code > Download ZIP*. Right-click the ZIP, choose *Extract All*, and pick a folder such as `C:\pc-tidy`. Not a OneDrive folder, and not straight from the ZIP: Windows runs that from your Temp folder, which pc-tidy cleans.
+3. In that folder, double-click **`setup.cmd`** once. It finds Python, installs what pc-tidy needs into the folder's own `.venv`, makes `settings.ini`, offers to download the AI model, and checks that everything works. It is safe to run again.
+4. Double-click **`pc-tidy.cmd`** whenever you want space back. Right-click it and choose *Run as administrator* to include the Windows folders.
+
+The walkthrough below does the same by hand, and shows each tool on its own.
+
 ---
 
 ## Walkthrough
@@ -264,14 +273,24 @@ type = Dev & science tools
 Before 2.0 the settings were inside the scripts, so your edited `cleanup.ps1` and `.py` files would block `git pull`. Instead:
 
 1. Rename your `pc-tidy` folder to `pc-tidy-old`.
-2. Clone a fresh copy, as in step 2 of the walkthrough.
-3. In the new folder, run:
+2. Get a fresh copy into a new `pc-tidy` folder next to it, as in step 2 of the walkthrough or the quick start.
+3. In the new folder, double-click `setup.cmd`. It finds `..\pc-tidy-old` and offers to bring its settings in. Or run:
 
 ```powershell
 python pc_tidy.py settings import ..\pc-tidy-old
 ```
 
-It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of the old `.py` files and your changes to `classify.py`, without running any of them. It lists every value it would import and writes `settings.ini` only after you type `yes`. A value that pc-tidy 2.0 refuses is listed with the reason and left out (for example a path inside Program Files in `$ExtraPathsToDelete`), and so is any line it can't read. In this version `cleanup.ps1` still reads its own SETTINGS block, so copy that block into the new `cleanup.ps1` too.
+It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of the old `.py` files and your changes to `classify.py`, without running any of them. It lists every value it would import and writes `settings.ini` only after you type `yes`. A value that pc-tidy 2.0 refuses is listed with the reason and left out (for example a path inside Program Files in `$ExtraPathsToDelete`), and so is any line it can't read.
+
+## Where pc-tidy keeps its files
+
+- `settings.ini`: in the pc-tidy folder. Change it with `python pc_tidy.py settings edit`.
+- Everything else pc-tidy writes for itself is in `%LOCALAPPDATA%\pc-tidy`, a folder OneDrive never uploads:
+  - `reports\`: the reports of the guided flow.
+  - `plans\`: the full list of each dry run.
+  - `runs\`: the record of every change, which undo and recovery read.
+  - `logs\pc-tidy.log`: the details of any error.
+- `python disk_report.py` saves `disk_report.pdf` in the current folder. If that folder is synced by OneDrive or is part of Windows (an administrator window starts in `C:\Windows\System32`), it goes to `reports\` instead, and the report says so.
 
 ## Troubleshooting
 
@@ -280,7 +299,12 @@ It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of
 | `Error: accepts 1 arg(s), received 3`, or a command looks doubled | It was pasted twice. Right-click also pastes in the terminal, so use only one of the two. |
 | `Could not open requirements file` | You're not in the project folder. `cd` into `pc-tidy` first (see the tip in step 2). |
 | `running scripts is disabled on this system` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. |
-| `No module named 'reportlab'` | Run `pip install -r requirements.txt` again, since the PDF report needs it. |
+| `... stopped: ...` | The line says what happened and what to do. The details are in `%LOCALAPPDATA%\pc-tidy\logs\pc-tidy.log`; add `--debug` to the command to see them on screen. |
+| `a part it needs isn't installed` or `No module named 'reportlab'` | Double-click `setup.cmd` again, or run `pip install -r requirements.txt`. |
+| `Python 3.9 or newer ... none was found` | Install Python from python.org with "Add python.exe to PATH" ticked, then double-click `setup.cmd`. |
+| `pc-tidy's own folder ... is inside your Temp folder` | Move the pc-tidy folder out of Temp (for example to `C:\pc-tidy`). It happens when it runs straight from a ZIP. |
+| `The report is saved to ...\reports instead of here` | Nothing to fix: the folder you are in is synced by OneDrive or is part of Windows, so the report went to pc-tidy's own folder. |
+| A check in `python pc_tidy.py selftest` says FAIL | It says what to fix. Run the self-test again afterwards. |
 | `Ollama isn't running` | Start Ollama from the Start menu. The scripts still work without it, just without the AI parts. |
 | `Model llama3.2:3b not found` | `ollama pull llama3.2:3b` |
 | `No other drive found` (move_off_c.py) | Pass a destination yourself, for example `--to D:\From-C`. |
@@ -294,7 +318,7 @@ It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of
 - **Rules first, AI second.** Plain rules in `classify.py` (plus your own in `settings.ini`) handle everything predictable. The AI is used only where rules can't decide: reading a PDF to sort it, sorting a whole folder, naming the type of an unfamiliar app, or describing an unfamiliar folder.
 - **The AI never decides what gets deleted.** Its descriptions are labeled as guesses, and `cleanup.ps1` only does what you switch on.
 - **Small and local.** `llama3.2:3b` runs on most laptops without a GPU and nothing is sent online.
-- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and `pctidy\settings.py` reads `settings.ini`.
+- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and the `pctidy` package holds the rest: `settings.py` (settings.ini), `fixes.py` (the ranked fixes), `leftovers.py` (what's left), `guided.py` (the guided flow), and the safety core (`safety.py`, `plan.py`, `executor.py`, `journal.py`, `lock.py`, `undo.py`). The plan for 2.0 is in [docs/PLAN.md](docs/PLAN.md), and the checks to do by hand before a release are in [docs/CHECKLIST.md](docs/CHECKLIST.md).
 
 ## License
 

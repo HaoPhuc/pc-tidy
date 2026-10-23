@@ -27,7 +27,8 @@ from types import SimpleNamespace
 import classify
 import llm
 import move_off_c
-from pctidy import context, fixes, journal, leftovers, settings
+from pctidy import context, errors, fixes, journal, leftovers, settings, ui
+from pctidy.progress import Line
 from scanner import GB, Scan, clean_root, fixed_drives, fmt, norm, system_drive
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -104,7 +105,7 @@ def llm_describe(folder, scan):
 
 def llm_app_types(apps, max_apps=None):
     """Ask the LLM to sort apps no rule recognized into APP_TYPES. Returns {name: type}."""
-    out = {}
+    out, line = {}, Line()
     apps = apps[:options().ai.max_apps if max_apps is None else max_apps]
     for start in range(0, len(apps), 20):
         chunk = apps[start:start + 20]
@@ -119,14 +120,18 @@ def llm_app_types(apps, max_apps=None):
             "Answer with one type per app, in the same order. Use Other if you don't know the app.\n\n"
             + listing
         )
-        sys.stderr.write(f"\r  asking LLM about apps {start + 1}-{start + len(chunk)} ...{' ' * 20}")
+        line.show(f"asking the local AI about apps {start + 1}-{start + len(chunk)} of {len(apps)}. "
+                  "Ctrl+C skips the AI part.", force=True)
         try:
             types = llm.ask_json(prompt, schema).get("types", [])
+        except KeyboardInterrupt:
+            print("\nSkipped the AI part.")
+            break
         except Exception:
             continue
         for a, t in zip(chunk, types):
             out[a["name"]] = t
-    sys.stderr.write("\r" + " " * 70 + "\r")
+    line.clear()
     return out
 
 
@@ -204,14 +209,19 @@ def build_report(roots, use_llm=True, opts=None):
     data["llm_folders"] = []
     leaves = [f for f in leaves if cat_of.get(f) != classify.PERSONAL]   # you know what your own folders are
     if leaves and llm_ok:
-        for folder in sorted(leaves, key=lambda f: -scan.sizes[f])[:opts.ai.max_folders]:
-            sys.stderr.write(f"\r  asking LLM about {os.path.basename(folder)[:40]} ...{' ' * 20}")
+        line, ask = Line(), sorted(leaves, key=lambda f: -scan.sizes[f])[:opts.ai.max_folders]
+        for i, folder in enumerate(ask, 1):
+            line.show(f"asking the local AI about {os.path.basename(folder)[:30]} ({i} of {len(ask)}). "
+                      "Ctrl+C skips the AI part.", force=True)
             try:
                 what = llm_describe(folder, scan)
+            except KeyboardInterrupt:
+                print("\nSkipped the AI part.")
+                break
             except Exception as e:
                 what = f"(LLM failed: {e})"
             data["llm_folders"].append({"size": scan.sizes[folder], "path": folder, "what": what})
-        sys.stderr.write("\r" + " " * 70 + "\r")
+        line.clear()
     data["llm_used"] = llm_ok
     return data
 
@@ -337,7 +347,8 @@ def prepare(cfg):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Show what is using disk space. Never deletes anything.")
+    ap = argparse.ArgumentParser(description="Show what is using disk space. Never deletes anything.",
+                                 epilog=ui.examples(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--path", action="append", help="drive or folder to scan (default: every fixed drive)")
     ap.add_argument("--out", action="append",
                     help="report file, .pdf or .txt (default: disk_report.pdf). Repeat for both")
@@ -358,7 +369,7 @@ def main():
             print(f"The PDF report needs reportlab, which isn't installed ({e}).\n"
                   "Run: pip install -r requirements.txt   (or get a text report with --out report.txt)")
             return 1
-    outs = [writable(o) for o in outs]
+    outs = [writable(o) for o in report_files(outs, bool(args.out), context.current())]
 
     roots = [clean_root(p) for p in (args.path or fixed_drives())]
     data = build_report(roots, use_llm=not args.no_llm and opts.ai.enabled, opts=opts)
@@ -379,6 +390,35 @@ def main():
     return 0
 
 
+def report_files(outs, given, ctx):
+    """Where to write the report. Your --out is written where you said, with a warning if OneDrive
+    uploads that folder. The default disk_report.pdf goes into the current folder, unless that is
+    under Windows (an admin window starts in System32) or in a folder OneDrive syncs (the report lists
+    your file names): then it goes into pc-tidy's reports folder, and this says so."""
+    from pctidy.paths import inside
+    out = []
+    for name in outs:
+        path = os.path.abspath(name)
+        synced = ctx.synced_by_onedrive(path)
+        if given:
+            if synced:
+                print(f"Note: {path} is in {synced}, which OneDrive uploads, so your file names will be uploaded too.")
+            out.append(name)
+            continue
+        if synced or inside(path, ctx.system_root):
+            folder = ctx.folder("reports")
+            os.makedirs(folder, exist_ok=True)
+            stem, ext = os.path.splitext(os.path.basename(name))
+            moved = os.path.join(folder, f"{stem}-{datetime.now():%Y-%m-%d-%H%M%S}{ext}")
+            why = (f"this folder is synced by OneDrive ({synced})" if synced else
+                   "this folder is part of Windows (PowerShell opened as administrator starts in System32)")
+            print(f"The report is saved to {folder} instead of here: {why}, and the report lists your file names.")
+            out.append(moved)
+        else:
+            out.append(name)
+    return out
+
+
 def writable(out):
     """The report file to write: `out`, or a dated name next to it if a program (a PDF viewer, say)
     has `out` open, so the scan isn't lost to an error at the very end."""
@@ -395,4 +435,4 @@ def writable(out):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(errors.run(main, "disk_report.py"))

@@ -27,7 +27,7 @@ import re
 import sys
 from pathlib import Path
 
-from pctidy import context, executor, lock, recovery, safety, settings, ui, volume
+from pctidy import context, errors, executor, lock, recovery, safety, settings, ui, volume
 from pctidy import undo as undo_core
 from pctidy.plan import Plan, fingerprint
 from scanner import GB, Scan, fmt, norm, system_drive
@@ -252,7 +252,8 @@ def undo(ctx=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Move big personal folders and files from C: to another drive.")
+    ap = argparse.ArgumentParser(description="Move big personal folders and files from C: to another drive.",
+                                 epilog=ui.examples(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--path", action="append", help="move this folder or file (can be given more than once)")
     ap.add_argument("--to", help="destination folder (default: <other drive>\\From-C, or the folder named "
                                  "by [move] dest_folder_name in settings.ini)")
@@ -341,4 +342,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(errors.run(main, "move_off_c.py"))

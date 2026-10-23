@@ -1,19 +1,42 @@
 <#
-cleanup.ps1 - free up space on C:. You choose what to clean in the [cleanup] section of settings.ini,
-usually after reading the output of disk_report.py:
-    python pc_tidy.py settings edit
+.SYNOPSIS
+Free up space on C:. You choose what to clean in the [cleanup] section of settings.ini.
 
-Run in PowerShell as administrator, from this folder:
-    .\cleanup.ps1 -DryRun    # shows what would be removed and how big it is, changes nothing
-    .\cleanup.ps1            # does it (asks you to type yes first)
+.DESCRIPTION
+cleanup.ps1 cleans what is switched on in [cleanup] (python pc_tidy.py settings edit), usually after
+reading the report of disk_report.py. Run it in PowerShell opened as administrator, from this folder.
+Without -DryRun it shows the plan and asks you to type yes first.
 
 It reads settings.ini with Python 3.9 or newer: this folder's .venv, the python of the window (an
 active conda or venv), or the py launcher. Set PCTIDY_PYTHON to the full path of python.exe to pick one.
 
 If PowerShell says running scripts is disabled, run this once:
     Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+.PARAMETER DryRun
+Show what would be removed and how big it is. Changes nothing.
+
+.EXAMPLE
+.\cleanup.ps1 -DryRun
+Shows each step and how much it would free, and changes nothing.
+
+.EXAMPLE
+.\cleanup.ps1
+Does it, after you type yes.
 #>
-param([switch]$DryRun)
+param(
+    [switch]$DryRun,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
+)
+
+if ($Rest) {
+    if ($Rest | Where-Object { $_ -in '--help', '-h', '/?', '-help', 'help' }) {
+        Get-Help $PSCommandPath -Detailed
+        exit 0
+    }
+    Write-Host "cleanup.ps1 doesn't know $($Rest -join ' '). Use -DryRun, or nothing. For help: .\cleanup.ps1 --help" -ForegroundColor Yellow
+    exit 1
+}
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)

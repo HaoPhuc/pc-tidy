@@ -4,8 +4,9 @@ import heapq
 import os
 import shutil
 import string
-import sys
 import time
+
+from pctidy.progress import Line, duration
 
 GB = 1024 ** 3   # the unit Windows Explorer calls "GB"
 
@@ -66,57 +67,65 @@ class Scan:
         self.files_over, self.usage = [], {}
         self.stats = {"files": 0, "bytes": 0, "denied": 0, "seconds": 0.0}
         self._heap, self._top, self._over = [], top_files, files_over_bytes
-        self._last_print = 0.0
-        t0 = time.time()
-        sys.setrecursionlimit(20000)
+        self._line = Line()
+        self._t0 = time.time()
         for root in self.roots:
             self.usage[root] = shutil.disk_usage(root)
             self._walk(root)
-        sys.stderr.write("\r" + " " * 78 + "\r")
-        self.stats["seconds"] = time.time() - t0
+        self._line.clear()
+        self.stats["seconds"] = time.time() - self._t0
         self.big_files = sorted(self._heap, reverse=True)
         self.files_over.sort(reverse=True)
 
-    def _progress(self):
-        now = time.time()
-        if now - self._last_print > 1:
-            self._last_print = now
-            sys.stderr.write(f"\r  scanned {self.stats['files']:,} files, {self.stats['bytes'] / GB:.1f} GB ...")
-            sys.stderr.flush()
+    def _progress(self, top):
+        elapsed = duration(time.time() - self._t0)
+        self._line.show(f"{os.path.basename(top) or top}: {self.stats['files']:,} files, "
+                        f"{self.stats['bytes'] / GB:.1f} GB, {elapsed} ...")
 
-    def _walk(self, folder):
-        total, own, subs = 0, 0, []
-        try:
-            entries = os.scandir(folder)
-        except OSError:
-            self.stats["denied"] += 1
-            self.sizes[folder] = self.own[folder] = 0
-            self.children[folder] = []
-            return 0
-        with entries:
-            for e in entries:
-                try:
-                    st = e.stat(follow_symlinks=False)
-                    if e.is_symlink() or getattr(st, "st_reparse_tag", 0) in (JUNCTION, SYMLINK):
-                        continue   # links point at folders that are counted elsewhere
-                    is_dir = e.is_dir(follow_symlinks=False)
-                except OSError:
-                    continue
-                if is_dir:
-                    subs.append(e.path)
-                    total += self._walk(e.path)
-                    continue
-                size = 0 if getattr(st, "st_file_attributes", 0) & CLOUD_ONLY else st.st_size
-                total += size
-                own += size
-                self.stats["files"] += 1
-                self.stats["bytes"] += size
-                if len(self._heap) < self._top:
-                    heapq.heappush(self._heap, (size, e.path))
-                elif size > self._heap[0][0]:
-                    heapq.heapreplace(self._heap, (size, e.path))
-                if size >= self._over:
-                    self.files_over.append((size, e.path))
-                self._progress()
-        self.sizes[folder], self.own[folder], self.children[folder] = total, own, subs
-        return total
+    def _walk(self, root):
+        """Without recursion, so a folder tree of any depth can't overflow the stack (problem 12)."""
+        stack = [(root, False, root)]          # (folder, its subfolders are done, top folder for progress)
+        pending = {}
+        while stack:
+            folder, done, top = stack.pop()
+            if done:
+                own, subs = pending.pop(folder)
+                self.sizes[folder] = own + sum(self.sizes[s] for s in subs)
+                self.own[folder], self.children[folder] = own, subs
+                continue
+            try:
+                entries = os.scandir(folder)
+            except OSError:
+                self.stats["denied"] += 1
+                self.sizes[folder] = self.own[folder] = 0
+                self.children[folder] = []
+                continue
+            own, subs = 0, []
+            with entries:
+                for e in entries:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                        if e.is_symlink() or getattr(st, "st_reparse_tag", 0) in (JUNCTION, SYMLINK):
+                            continue   # links point at folders that are counted elsewhere
+                        is_dir = e.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_dir:
+                        subs.append(e.path)
+                        continue
+                    size = 0 if getattr(st, "st_file_attributes", 0) & CLOUD_ONLY else st.st_size
+                    own += size
+                    self.stats["files"] += 1
+                    self.stats["bytes"] += size
+                    if len(self._heap) < self._top:
+                        heapq.heappush(self._heap, (size, e.path))
+                    elif size > self._heap[0][0]:
+                        heapq.heapreplace(self._heap, (size, e.path))
+                    if size >= self._over:
+                        self.files_over.append((size, e.path))
+                    self._progress(top)
+            pending[folder] = (own, subs)
+            stack.append((folder, True, top))
+            for sub in reversed(subs):
+                stack.append((sub, False, sub if folder == root else top))
+        return self.sizes[root]

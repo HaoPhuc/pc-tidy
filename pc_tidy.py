@@ -15,6 +15,7 @@ Usage:
     python pc_tidy.py settings import ..\pc-tidy-old
                                          # bring in the settings of a pc-tidy folder from before 2.0
     python pc_tidy.py cleanup-settings   # the [cleanup] settings as JSON, for cleanup.ps1
+    python pc_tidy.py selftest           # check that pc-tidy can work on this PC (setup.cmd runs it)
 """
 
 import argparse
@@ -24,7 +25,7 @@ import subprocess
 import sys
 import time
 
-from pctidy import context, guided, journal, lock, recovery, safety, settings, settings_import, ui
+from pctidy import context, errors, guided, journal, lock, recovery, safety, settings, settings_import, ui
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
@@ -162,6 +163,93 @@ def settings_import_old(ctx, folder=None):
     return 0
 
 
+def selftest(ctx):
+    """Check that pc-tidy can work on this PC. Each check says ok or what to do. Exit code 1 if one fails."""
+    import platform
+    import tempfile
+    from pctidy import executor
+    from pctidy.plan import Plan
+    failed = []
+
+    class Problem(Exception):
+        """A check that found something to fix: its message is shown as it is."""
+
+    def check(name, test):
+        try:
+            detail = test()
+        except Problem as e:
+            failed.append(name)
+            print(f"  FAIL  {name}: {e}")
+        except Exception as e:
+            failed.append(name)
+            print(f"  FAIL  {name}: {errors.explain(e)}")
+        else:
+            print(f"  ok    {name}" + (f" ({detail})" if detail else ""))
+
+    def python():
+        if sys.version_info < (3, 9):
+            raise Problem(f"this is Python {platform.python_version()}; pc-tidy needs 3.9 or newer")
+        return f"{platform.python_version()}, {sys.executable}"
+
+    def windows():
+        if os.name != "nt":
+            raise Problem("pc-tidy runs on Windows 10 and 11 only")
+        return platform.platform()
+
+    def packages():
+        import docx  # noqa: F401
+        import pypdf  # noqa: F401
+        import reportlab  # noqa: F401
+        return "reportlab, pypdf, python-docx"
+
+    def data_folder():
+        folder = ctx.folder()
+        os.makedirs(folder, exist_ok=True)
+        probe = os.path.join(folder, f"selftest-{os.getpid()}.tmp")
+        with open(probe, "x", encoding="utf-8") as f:
+            f.write("pc-tidy self-test")
+        os.remove(probe)
+        return folder
+
+    def the_lock():
+        lock.Lock(ctx, "pc_tidy.py selftest").acquire(wait=0, say=lambda *_: None).release()
+
+    def the_settings():
+        cfg = settings.load(ctx, create=True)
+        problems = cfg.errors()
+        return f"{len(problems)} mistake(s): python pc_tidy.py settings check" if problems else cfg.path
+
+    def dry_run_and_run():
+        problem = safety.temp_problem(ctx)
+        if problem:
+            raise Problem(problem)
+        folder = tempfile.mkdtemp(prefix="pc-tidy-selftest-", dir=ctx.temp)
+        probe = os.path.join(folder, "probe.txt")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("pc-tidy deletes this file to check that it can")
+        plan = Plan("selftest", ctx)
+        plan.add_delete(probe)
+        result = executor.execute(plan, ctx, say=lambda *_: None)
+        os.rmdir(folder)
+        if [o.status for o in result.outcomes] != ["done"] or os.path.exists(probe):
+            raise Problem(f"the test file wasn't deleted: {result.outcomes}")
+        return "a test file of its own in your Temp folder, listed, then deleted"
+
+    print("pc-tidy self-test")
+    check("Python", python)
+    check("Windows", windows)
+    check("the packages for the PDF report", packages)
+    check("its data folder", data_folder)
+    check("the lock that keeps two runs apart", the_lock)
+    check("settings.ini", the_settings)
+    check("a dry run and a run", dry_run_and_run)
+    if failed:
+        print(f"\n{len(failed)} check(s) failed. Fix them, then run: python pc_tidy.py selftest")
+        return 1
+    print("\nEverything works. Double-click pc-tidy.cmd to start.")
+    return 0
+
+
 def cleanup_settings(ctx):
     """[cleanup] for cleanup.ps1, as one line of JSON: the checked values, or ok=false and the refusal
     (exit code 2) if [cleanup] has a mistake. ASCII only, so PowerShell reads it in any code page."""
@@ -219,7 +307,7 @@ def _print_found(found):
 def main():
     ap = argparse.ArgumentParser(description="pc-tidy: see what fills C: and free space safely. With no command, "
                                              "it guides you through a scan, the report and the fixes.",
-                                 epilog="Example: python pc_tidy.py   (or double-click pc-tidy.cmd)")
+                                 epilog=ui.examples(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-llm", action="store_true", help="the guided flow without the local AI")
     ap.add_argument("--no-open", action="store_true", help="the guided flow without opening the PDF report")
     sub = ap.add_subparsers(dest="command")
@@ -235,10 +323,13 @@ def main():
     imp.add_argument("folder", nargs="?", help="the old pc-tidy folder (default: pc-tidy-old next to this one)")
     sub.add_parser("cleanup-settings", help="the [cleanup] settings as JSON, for cleanup.ps1 (exit code 2 if "
                                             "[cleanup] has a mistake)")
+    sub.add_parser("selftest", help="check that pc-tidy can work on this PC (setup.cmd runs it)")
     args = ap.parse_args()
     ctx = context.current()
     if args.command == "cleanup-settings":
         return cleanup_settings(ctx)
+    if args.command == "selftest":
+        return selftest(ctx)
     if args.command == "recover":
         return recover(ctx)
     if args.command == "status":
@@ -258,4 +349,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(errors.run(main, "pc_tidy.py"))

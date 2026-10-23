@@ -38,7 +38,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import llm
-from pctidy import context, executor, journal, lock, recovery, safety, settings, ui
+from pctidy import context, errors, executor, journal, lock, recovery, safety, settings, ui
 from pctidy import undo as undo_core
 from pctidy.paths import inside
 from pctidy.plan import Plan
@@ -339,7 +339,8 @@ def _ai_ready(cfg, ctx, unattended):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Sort a messy folder into subfolders.")
+    ap = argparse.ArgumentParser(description="Sort a messy folder into subfolders.",
+                                 epilog=ui.examples(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true", help="actually move files")
     ap.add_argument("--undo", action="store_true", help="revert the last --apply run")
     ap.add_argument("--no-llm", action="store_true", help="rules only, skip the LLM")
@@ -426,4 +427,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(errors.run(main, "tidy_folder.py"))
