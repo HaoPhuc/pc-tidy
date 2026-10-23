@@ -307,18 +307,9 @@ def render_text(data):
     return "\n".join(out)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Show what is using disk space. Never deletes anything.")
-    ap.add_argument("--path", action="append", help="drive or folder to scan (default: every fixed drive)")
-    ap.add_argument("--out", action="append",
-                    help="report file, .pdf or .txt (default: disk_report.pdf). Repeat for both")
-    ap.add_argument("--no-llm", action="store_true", help="skip the LLM parts")
-    ap.add_argument("--no-open", action="store_true", help="don't open the PDF when done")
-    args = ap.parse_args()
-
-    cfg = settings.load(create=True)
-    for note in cfg.notes:
-        print(note)
+def prepare(cfg):
+    """The report's options from settings.ini, your own rules in place and the AI set up. A mistake
+    in what the report reads is printed, and the report goes on with the defaults for it."""
     # its own sections, your rules, and sections with names nothing knows (a misspelt rule, say)
     problems = [p for p in cfg.errors() if p.section in ("report", "ai", "move")
                 or settings.section_kind(p.section or "") in ("rule", None)]
@@ -331,6 +322,22 @@ def main():
     opts = options(cfg)
     opts.problems = [cfg.describe(p) for p in problems]
     llm.configure(opts.ai)
+    return opts
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Show what is using disk space. Never deletes anything.")
+    ap.add_argument("--path", action="append", help="drive or folder to scan (default: every fixed drive)")
+    ap.add_argument("--out", action="append",
+                    help="report file, .pdf or .txt (default: disk_report.pdf). Repeat for both")
+    ap.add_argument("--no-llm", action="store_true", help="skip the LLM parts")
+    ap.add_argument("--no-open", action="store_true", help="don't open the PDF when done")
+    args = ap.parse_args()
+
+    cfg = settings.load(create=True)
+    for note in cfg.notes:
+        print(note)
+    opts = prepare(cfg)
 
     outs = args.out or ["disk_report.pdf"]
     if any(o.lower().endswith(".pdf") for o in outs):

@@ -1,7 +1,11 @@
 r"""
-pc_tidy.py - pc-tidy's own commands. The guided flow that will start with no arguments comes later.
+pc_tidy.py - see what fills C: and free space on it, safely. With no command it guides you: a scan of C:,
+the report with the fixes for C: ranked lowest risk first, the fixes you pick, the exact list (the dry
+run), your yes, and a summary. Double-clicking pc-tidy.cmd does the same.
 
 Usage:
+    python pc_tidy.py                    # the guided flow
+    python pc_tidy.py --no-llm --no-open # ... without the local AI, and without opening the PDF
     python pc_tidy.py recover            # check runs that were interrupted, and decide about half-done moves
     python pc_tidy.py status             # what unattended runs couldn't do, and anything left unfinished
     python pc_tidy.py status --dismiss   # ... and then clear those notices
@@ -20,7 +24,7 @@ import subprocess
 import sys
 import time
 
-from pctidy import context, journal, lock, recovery, safety, settings, settings_import, ui
+from pctidy import context, guided, journal, lock, recovery, safety, settings, settings_import, ui
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
@@ -213,7 +217,11 @@ def _print_found(found):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="pc-tidy: see what fills C: and free space safely.")
+    ap = argparse.ArgumentParser(description="pc-tidy: see what fills C: and free space safely. With no command, "
+                                             "it guides you through a scan, the report and the fixes.",
+                                 epilog="Example: python pc_tidy.py   (or double-click pc-tidy.cmd)")
+    ap.add_argument("--no-llm", action="store_true", help="the guided flow without the local AI")
+    ap.add_argument("--no-open", action="store_true", help="the guided flow without opening the PDF report")
     sub = ap.add_subparsers(dest="command")
     sub.add_parser("recover", help="check interrupted runs, and decide about half-done moves")
     st = sub.add_parser("status", help="notices from unattended runs, and unfinished work")
@@ -246,8 +254,7 @@ def main():
             return settings_import_old(ctx, args.folder)
         se.print_help()
         return 0
-    ap.print_help()
-    return 0
+    return guided.run(no_llm=args.no_llm, no_open=args.no_open)
 
 
 if __name__ == "__main__":

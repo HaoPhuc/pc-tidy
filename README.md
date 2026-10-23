@@ -4,6 +4,7 @@ Find out what is filling up your Windows PC, clean it up safely, move big files 
 
 | Tool | What it does | Changes files? |
 |---|---|---|
+| `pc-tidy.cmd` (or `python pc_tidy.py`) | **The easy way.** Double-click it: it scans C:, shows the fixes for C: lowest risk first, and does the ones you pick. Then a menu to sort Downloads, undo, or change settings. | Only what you pick, after the exact list and your yes |
 | `disk_report.py` | Scans every drive and saves a PDF report: where the space goes by category, what you can clean up, what could move off C:, installed apps by type, and the biggest folders and files. | No, read-only |
 | `cleanup.ps1` | Cleans what you switch on in its settings: caches, temp files, crash dumps, old installers, conda envs, apps, and any paths you add. | Yes, after a dry run and your confirmation |
 | `move_off_c.py` | Moves big personal folders and files from C: to another drive. It copies, checks the copy, then deletes. | Moves only, and can undo |
@@ -71,7 +72,18 @@ Each time you open a new PowerShell window later, run `conda activate pc-tidy` (
 
 ### 4. See what is using your drives
 
-Open PowerShell **as administrator** (right-click PowerShell > *Run as administrator*) so the scan can look inside protected folders. It starts in `C:\Windows\System32`, so go back to the project first:
+**The easy way:** double-click `pc-tidy.cmd` in the pc-tidy folder. To include the Windows folders (Windows Temp, crash dumps, hibernation), right-click it and choose *Run as administrator* instead. It:
+
+1. scans C: and saves the report in `%LOCALAPPDATA%\pc-tidy\reports` (a folder OneDrive never uploads)
+2. shows the fixes for C:, numbered, lowest risk first, with what each frees
+3. asks which ones you want: type numbers like `1,3` or `2-4`, `L` for all the low-risk ones, or press Enter to stop. Nothing is picked for you.
+4. shows exactly what it will do (the dry run): every file it would delete, every folder it would move. Nothing has changed yet.
+5. does it only after you type `yes`. A high-risk fix (emptying the Recycle Bin) asks a second time.
+6. says what was freed, what was skipped and why, and how much free space C: has now
+
+Fixes it can't do for you (the browser cache, Windows.old) say exactly how to do them by hand. Moves are made by `move_off_c.py`, so `python move_off_c.py --undo` puts them back. After that, a menu lets you sort Downloads, undo the last move or sort, open the reports folder, or change settings.
+
+Each tool also works on its own. Open PowerShell **as administrator** (right-click PowerShell > *Run as administrator*) so the scan can look inside protected folders. It starts in `C:\Windows\System32`, so go back to the project first:
 
 ```powershell
 cd <path to pc-tidy>
