@@ -249,3 +249,15 @@ def test_two_fixes_with_the_same_name_say_where(tmp_path):
     titles = [r["title"] for r in build(tmp_path, fake_pc(tmp_path))["rows"]]
 
     assert titles == [f"conda package cache in {home / 'anaconda3'}", f"conda package cache in {home / 'miniconda3'}"]
+
+
+def test_node_modules_of_apps_are_not_offered(tmp_path):
+    home = tmp_path / "profile"
+    write(tmp_path / "settings.ini", "[report]\ncleanup_min_gb = 0.001\n")
+    blob(home / "Documents" / "robot" / "node_modules" / "a.js", 2)
+    blob(home / "AppData" / "Roaming" / "npm" / "node_modules" / "b.js", 2)       # npm's own
+    blob(home / ".vscode" / "extensions" / "x" / "node_modules" / "c.js", 2)       # VS Code's
+
+    ids = [r["id"] for r in build(tmp_path, fake_pc(tmp_path))["rows"]]
+
+    assert ids == [f"node:{home / 'Documents' / 'robot' / 'node_modules'}"]

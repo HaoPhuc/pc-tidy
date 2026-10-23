@@ -19,6 +19,7 @@ and only then deletes the source.
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -448,6 +449,9 @@ class _Runner:
     def _run_tool(self, a):
         tool = TOOLS[a["tool"]]
         cmd = tool.command(a)
+        found = shutil.which(cmd[0])      # conda is conda.bat, which Windows only starts by its full path
+        if found:
+            cmd = [found] + cmd[1:]
         try:
             if tool.interactive:
                 proc = subprocess.run(cmd)

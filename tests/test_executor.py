@@ -308,6 +308,22 @@ def test_a_non_interactive_tool_gets_closed_stdin(tmp_path, monkeypatch):
     assert seen.read_text() == "''"
 
 
+def test_a_tool_that_is_a_batch_file_runs(tmp_path, monkeypatch):
+    """conda is conda.bat on Windows: started by its bare name, Windows wouldn't find it."""
+    done = tmp_path / "ran.txt"
+    write(tmp_path / "bin" / "fake-conda.bat", f"@echo off\r\necho %* > \"{done}\"\r\n")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ["PATH"])
+    monkeypatch.setitem(executor.TOOLS, "conda_clean", executor.Tool(
+        "conda", lambda a: ["fake-conda", "clean", "--all", "--yes"], False, 60, None))
+    plan = Plan("test", context.current())
+    plan.add_tool("conda_clean")
+
+    result = executor.execute(plan)
+
+    assert [o.status for o in result.outcomes] == ["done"], result.outcomes
+    assert done.read_text().strip() == "clean --all --yes"
+
+
 def test_a_count_only_action_whose_numbers_changed_is_skipped_with_the_new_numbers(monkeypatch):
     emptied = []
     monkeypatch.setitem(executor.COUNT_ONLY, "empty_recycle_bin", (

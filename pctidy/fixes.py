@@ -55,7 +55,9 @@ _CONDA_PKGS = re.compile(r"(^|/)(ana|mini)conda3?/pkgs$")
 _CONDA_ENVS = re.compile(r"(^|/)(ana|mini)conda3?/envs$")
 _BROWSERS = ((re.compile(r"/google/chrome/user data$"), "Chrome"), (re.compile(r"/microsoft/edge/user data$"), "Edge"))
 _BROWSER_CACHES = ("Cache", "Code Cache", "GPUCache")
-_NODE = re.compile(r"^(?!.*/(appdata|program files[^/]*|programdata|windows|\.vscode|\.cache)/).*/node_modules$")
+_NODE = re.compile(r"/node_modules$")
+# node_modules of apps (VS Code's, npm's own) are not yours to delete; checked below your profile
+_APP_FOLDERS = re.compile(r"/(appdata|program files[^/]*|programdata|windows|\.vscode|\.cache)/")
 
 
 def gb(n):
@@ -73,9 +75,11 @@ class Fix:
     amount), up_to or at_least (measuring ran out of time, with or without the scanned size to say
     'up to'), admin (needs admin to measure) or unknown."""
 
-    def __init__(self, id, title, risk, why, how, undo, by="manual"):
+    def __init__(self, id, title, risk, why, how, undo, by="manual", scope="user"):
         assert risk in RISKS
         self.id, self.title, self.risk, self.why, self.how, self.undo, self.by = id, title, risk, why, how, undo, by
+        self.scope = scope      # "machine": only an administrator window can do it
+        self.action = None      # what the guided flow does, see guided.py; None: you do it by hand
         self.bytes, self.state, self.note, self.limit = 0, "measured", "", 0
         self.files = {}         # normalised path -> bytes it frees
         self.folders = []       # (normalised folder, bytes): a move frees a whole folder
@@ -100,7 +104,8 @@ class Fix:
     def as_dict(self):
         return {"id": self.id, "title": self.title, "risk": self.risk, "why": self.why, "how": self.how,
                 "undo": self.undo, "by": self.by, "bytes": self.bytes, "size": self.size_text(),
-                "counted": self.counted, "total": self.total, "note": self.note}
+                "counted": self.counted, "state": self.state, "total": self.total, "note": self.note,
+                "scope": self.scope, "action": self.action}
 
 
 # ---------- measuring ----------
@@ -259,10 +264,13 @@ def table_fixes(ctx, cfg, notes):
                                                                           "leaves it alone."))
             continue
         switches, why = _TABLE_FIXES[row.fix]
-        fix = Fix(row.fix, row.title, "Low", why, _cleanup_how(cfg, switches), "Not needed", by=CLEANUP)
+        fix = Fix(row.fix, row.title, "Low", why, _cleanup_how(cfg, switches), "Not needed", by=CLEANUP,
+                  scope=row.scope)
         values = {"temp": ctx.temp, "system_root": ctx.system_root, "local": ctx.local_appdata}
         paths = [p.format(**values) for p in row.patterns]
-        out.append(measure(fix, ctx, **{"contents" if row.kind == "contents" else "patterns": paths}))
+        kind = "contents" if row.kind == "contents" else "patterns"
+        fix.action = {"delete": kind, "places": paths}
+        out.append(measure(fix, ctx, **{kind: paths}))
     return out
 
 
@@ -280,6 +288,7 @@ def conda_fixes(scan, ctx, cfg):
         fix = Fix("conda-pkgs", "conda package cache", "Low", "Downloaded again when needed. Packages your "
                   "environments use are hard links, so they don't count", _cleanup_how(cfg, ("conda_cache",)) +
                   ", in a window where conda works", "Not needed", by=CLEANUP)
+        fix.action = {"tool": "conda_clean"}
         fix = measure(fix, ctx, contents=[pkgs], limit=scan.sizes[pkgs])
         if fix:
             fix.where = pkgs
@@ -291,6 +300,7 @@ def conda_fixes(scan, ctx, cfg):
             fix = Fix(f"conda-env:{name}", f"conda environment {name}", "Medium",
                       "Can be made again from its packages", _listed_how(cfg, "conda_envs_to_remove", name, name),
                       f"conda create -n {name} ... again", by=CLEANUP)
+            fix.action = {"tool": "conda_env_remove", "name": name}
             fix = measure(fix, ctx, contents=[env], limit=scan.sizes.get(env, 0))
             if fix:
                 fix.where = env
@@ -335,14 +345,18 @@ def installers_fix(ctx, cfg):
                         files.append(e.path)
         except OSError:
             continue
+    fix.action = {"delete": "files", "places": files}
     return measure(fix, ctx, files=files) if files else None
 
 
 def node_fixes(scan, ctx, cfg):
     min_bytes = cfg.value("report", "cleanup_min_gb") * GB
     found = []
+    home = norm(ctx.profile)
     for folder in sorted(_folders(scan, _NODE, ctx), key=len):          # outermost first
-        if scan.sizes[folder] < min_bytes:
+        n = norm(folder)
+        below = n[len(home):] if n.startswith(home + "\\") else n      # the part an app folder would be in
+        if scan.sizes[folder] < min_bytes or _APP_FOLDERS.search(below.replace("\\", "/") + "/"):
             continue
         if any(norm(folder).startswith(norm(f) + "\\") for f in found):
             continue
@@ -352,6 +366,7 @@ def node_fixes(scan, ctx, cfg):
         project = os.path.dirname(folder)
         fix = Fix(f"node:{folder}", f"Node.js packages of {os.path.basename(project)}", "Medium",
                   "npm install brings them back", f"Delete the folder {folder}", f"npm install in {project}")
+        fix.action = {"delete": "files", "places": [folder]}
         out.append(measure(fix, ctx, contents=[folder], limit=scan.sizes[folder]))
     return out
 
@@ -365,6 +380,7 @@ def move_fixes(move):
         fix = Fix(f"move:{c['path']}", f"Move {c['path']} to {move['dest']}", "Medium",
                   "Can be undone", f'python move_off_c.py --path "{c["path"]}"', "python move_off_c.py --undo",
                   by="move_off_c.py")
+        fix.action = {"move": c["path"]}
         fix.bytes = c["size"]
         if c["kind"] == "file":
             fix.files = {_key(c["path"]): c["size"]}
@@ -395,7 +411,8 @@ def hibernation_fix(ctx, cfg):
         return None
     fix = Fix("hibernation", "Turn off hibernation", "Medium",
               "No hibernate or Fast Startup until you turn it back on", _cleanup_how(cfg, ("hibernation",)),
-              "powercfg /h on (as administrator)", by=CLEANUP)
+              "powercfg /h on (as administrator)", by=CLEANUP, scope="machine")
+    fix.action = {"tool": "hibernation_off"}
     fix.bytes = size
     return fix
 
@@ -413,6 +430,7 @@ def recycle_bin_fix(ctx, cfg):
         size, items = found
     fix = Fix("recycle-bin", f"Empty the Recycle Bin ({items:,} item{'s' if items != 1 else ''})", "High",
               "Can't be undone: check what's in it first", _cleanup_how(cfg, ("recycle_bin",)), "None", by=CLEANUP)
+    fix.action = {"count_only": "empty_recycle_bin"}
     fix.bytes = size
     return fix
 
@@ -425,7 +443,7 @@ def windows_old_fix(scan, ctx):
     fix = Fix("windows-old", "Previous Windows installation (Windows.old)", "High",
               "No going back to the old version of Windows",
               "Start > Disk Cleanup > C: > Clean up system files > tick 'Previous Windows installation(s)' > OK",
-              "None")
+              "None", scope="machine")
     fix.bytes, fix.state = size, "about"       # partly unreadable without admin, and Windows decides
     return fix
 
