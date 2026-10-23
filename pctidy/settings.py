@@ -82,6 +82,7 @@ SECTIONS = {
         Key("max_depth", "int", 8, 1, 100),
         Key("top_files", "int", 20, 0, 10000),
         Key("cleanup_min_gb", "number", 0.1, 0, 100000),
+        Key("target_free_percent", "int", 15, 1, 90),
     ),
     "ai": (
         Key("enabled", "yesno", True),

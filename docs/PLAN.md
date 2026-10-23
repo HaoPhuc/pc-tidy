@@ -9,8 +9,9 @@ Updated 2026-10-23. The plan below is the one chosen at the start, unchanged. Th
 | M1 Tests and CI | Done in PR #5 |
 | M2 Safety core | Done in PR #6. Fixes problems 3, 4, 5, 13 and 15 |
 | M3 One settings file | Done in PR #7 |
-| M4 cleanup.ps1 | **Lean version, in PR #8**: `cleanup.ps1` reads `[cleanup]` from `settings.ini` (through `python pc_tidy.py cleanup-settings`), and problems 1 and 14 are fixed. Deferred: the Python port with exact per-file dry-run lists (problem 2), the Recycle Bin and conda measurements, the other-account check (problem 8) and winget's agreement prompt (problem 9). |
-| M5 Report, M6 Guided entry point | Next, ahead of more infrastructure: what users see comes first |
+| M4 cleanup.ps1 | **Lean version, done in PR #8**: `cleanup.ps1` reads `[cleanup]` from `settings.ini` (through `python pc_tidy.py cleanup-settings`), and problems 1 and 14 are fixed. Deferred: the Python port with exact per-file dry-run lists (problem 2), the Recycle Bin and conda measurements, the other-account check (problem 8) and winget's agreement prompt (problem 9). |
+| M5 Report | **Lean version**: the report leads with the ranked fixes for C: (`pctidy/fixes.py`), measured file by file (hard links count 0, compressed files their size on disk, nothing counted twice, "needs admin to measure" where this window can't look), with a running total and the `target_free_percent` line. Also fixes problems 10 and 11. Deferred: `fix N` and the saved scan (they belong with M6's picking), the report-location rule for OneDrive and System32 (problem 16, with M6's reports folder), duplicates (M7), Docker and WSL rows. |
+| M6 Guided entry point | Next, ahead of more infrastructure: what users see comes first |
 | M7 What's left, M8 Polish | After M5 and M6 |
 
 Keep each milestone lean: build what the user sees and what the rules need, and cut the rest.

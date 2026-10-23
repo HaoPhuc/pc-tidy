@@ -15,6 +15,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 import classify
+from pctidy import fixes
 
 GB = 1024 ** 3
 
@@ -53,6 +54,7 @@ def _register_fonts():
 
 
 FONT, BOLD, UNICODE = _register_fonts()
+BULLET = "•" if UNICODE else "-"
 
 
 def t(text):
@@ -164,6 +166,39 @@ def section(story, title, intro=None):
         story.append(P(intro, "intro"))
 
 
+RISK_COLORS = {"Low": "#2e7d32", "Medium": "#b26a00", "High": "#c62828"}
+
+
+def fixes_section(story, f):
+    """The ranked fixes for C:, with what each frees, its risk and exactly how to do it."""
+    intro = "What to do first to free space, lowest risk first and biggest first within each risk. "
+    if f.get("size"):
+        intro += (f"{t(f['drive'])} has {t(gb(f['free']))} free of {t(gb(f['size'], 0))} "
+                  f"({f['free'] / f['size'] * 100:.0f}%). ")
+    intro += "Each number counts exactly the files the fix removes, once."
+    section(story, f"Fixes for {f['drive']}", intro)
+    if f["rows"]:
+        rows = []
+        for n, r in enumerate(f["rows"], 1):
+            detail = [P(f"<b>{t(r['title'])}</b>"),
+                      P(t(f"{r['why']}."), "path"),
+                      P(f"<b>How:</b> {t(r['how'])}", "path"),
+                      P(f"<b>Undo:</b> {t(r['undo'])}", "path")]
+            if r["note"]:
+                detail.append(P(t(r["note"]), "path"))
+            rows.append([P(str(n), "size"), P(t(r["size"]), "size"),
+                         P(t(fixes.gb(r["total"])) if r["total"] is not None else "", "size"),
+                         P(f"<font color='{RISK_COLORS[r['risk']]}'><b>{r['risk']}</b></font>"), detail])
+        story.append(table(["#", "Frees", "Total", "Risk", "Fix"], rows,
+                           [7 * mm, 24 * mm, 17 * mm, 14 * mm, FRAME_W - 62 * mm]))
+    elif f["scanned"]:
+        story.append(P("Nothing found that is worth doing.", "body"))
+    lines = ([f"<b>{t(f['target_line'])}</b>"] if f.get("target_line") else []) + [t(n) for n in f["notes"]]
+    if lines:
+        story.append(Spacer(1, 6))
+        story += [Paragraph(x, S["bullet"], bulletText=BULLET) for x in lines]
+
+
 def render(data, path):
     doc = SimpleDocTemplate(path, pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
                             topMargin=MARGIN, bottomMargin=18 * mm,
@@ -179,19 +214,16 @@ def render(data, path):
         story += [Paragraph(t(p), S["bullet"], bulletText="\u2022" if UNICODE else "-")
                   for p in data["settings_problems"]]
 
-    # --- drives and summary ---
+    if data.get("notices"):
+        story.append(P("<b>Needs your attention:</b> runs nobody was watching couldn't do everything. Clear these "
+                       "with: python pc_tidy.py status --dismiss", "body"))
+        story += [Paragraph(t(n), S["bullet"], bulletText=BULLET) for n in data["notices"]]
+
+    # --- drives, then the fixes for C: ---
     story.append(drive_meters(data["drives"]))
-    summary = []
-    if data["cleanup"]:
-        summary.append(f"<b>Clean up:</b> about {t(gb(sum(c['size'] for c in data['cleanup']), 0))} "
-                       "in items the report recognizes (see below, then cleanup.ps1).")
     m = data.get("move")
-    if m and m["candidates"]:
-        summary.append(f"<b>Move:</b> {t(gb(sum(c['size'] for c in m['candidates']), 0))} of personal files "
-                       f"could move from C: to {t(m['dest'])} with move_off_c.py.")
-    if summary:
-        story.append(Spacer(1, 6))
-        story += [Paragraph(x, S["bullet"], bulletText="\u2022" if UNICODE else "-") for x in summary]
+    if data.get("fixes"):
+        fixes_section(story, data["fixes"])
 
     # --- categories ---
     if data["categories"]:
@@ -202,7 +234,8 @@ def render(data, path):
 
     # --- clean up ---
     section(story, "Things you can clean up",
-            "Recognized items and what to do. Settings named cleanup.ps1: ... are switches in cleanup.ps1.")
+            "Everything the report recognizes, by folder. The fixes above say how much each really frees. "
+            "Advice that says cleanup.ps1 means its switches in the [cleanup] section of settings.ini.")
     if data["cleanup"]:
         rows = [[P(t(gb(c["size"])), "size"),
                  [P(f"<b>{t(c['what'])}</b>"), P(t(c["path"]), "path")],

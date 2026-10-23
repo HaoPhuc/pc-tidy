@@ -81,6 +81,7 @@ python disk_report.py
 
 It scans every drive (a few minutes each), saves `disk_report.pdf` and opens it. The report has these sections:
 
+- **Fixes for C:**: what to do first, as a numbered list. Lowest risk first (things that come back by themselves), then what can be undone or rebuilt, then what is gone for good. Each fix says how much it frees, measured file by file (a file shared through a hard link counts as nothing, since deleting it frees nothing), how risky it is, exactly how to do it, and how to undo it. A running total and one line say which fixes bring C: to 15% free (`target_free_percent` in `settings.ini`). Run the report as administrator to measure the Windows folders too.
 - **Drives**: used and free space on each drive.
 - **Where the space goes**: everything sorted into system, apps, games, dev and science tools, caches and temp, and personal files.
 - **Things you can clean up**: items the script recognizes, each with what to do. Many say `cleanup.ps1: <Setting>`, which is the setting that cleans it.
@@ -205,7 +206,7 @@ python pc_tidy.py settings show    # shows every value and where it came from
 
 | Section | Used by | What's in it |
 |---|---|---|
-| `[report]` | `disk_report.py` | `min_gb` and `max_depth` for the folder tree, `top_files`, `cleanup_min_gb` |
+| `[report]` | `disk_report.py` | `min_gb` and `max_depth` for the folder tree, `top_files`, `cleanup_min_gb`, `target_free_percent` |
 | `[ai]` | `tidy_folder.py`, `disk_report.py` | `enabled`, `model` (any Ollama model, for example a bigger one like `qwen2.5:7b` for better descriptions), `url` (only this PC is allowed), `timeout_seconds`, how many folders and apps the AI describes |
 | `[move]` | `move_off_c.py` | `min_gb`, `dest_folder_name` |
 | `[tidy]` | `tidy_folder.py` and the weekly task | `source`, `dest`, `archive_after_days`, `skip_newer_than_min`, `rename_with_ai`, `categories` (the folders the AI picks from) |
