@@ -205,17 +205,21 @@ class _Rules:
         drive, rest = os.path.splitdrive(text)
         parts = [x for x in rest.split("\\") if x]
         first = next(i for i, x in enumerate(parts) if has_wildcard(x))
-        parent = norm(real(os.path.join(drive + "\\", *parts[:first])))
+        written = norm(os.path.join(drive + "\\", *parts[:first]))
+        parent = norm(real(written))
         if self.sandbox and not any(inside(parent, s) for s in self.sandbox):
             return f"{pattern} is outside the test folders (PCTIDY_SANDBOX_ROOT)"
+        # both as written and resolved: X:\* is a drive root to whoever wrote it, even when X: is a
+        # subst letter that resolves to a folder
+        forms = (written, parent)
         what = None
-        if is_root(parent):
+        if any(is_root(f) for f in forms):
             what = "a drive root could empty the drive"
-        elif parent in self.users_dir:
+        elif any(f in self.users_dir for f in forms):
             what = "the Users folder could delete every profile"
-        elif parent in self.profiles:
+        elif any(f in self.profiles for f in forms):
             what = "a user profile could delete its Documents, Desktop and more"
-        elif parent in self.known:
+        elif any(f in self.known for f in forms):
             what = f"{os.path.basename(self._name(parent))} could empty it"
         if what:
             return (f"'{pattern}' is refused: a wildcard directly under {what}. List the folders you mean, "

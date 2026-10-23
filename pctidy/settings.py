@@ -144,8 +144,7 @@ CONSEQUENCES = {
     "report": "disk_report.py uses the default instead.",
     "ai": "tidy_folder.py sorts by its rules only (as with --no-llm) until it's fixed; "
           "disk_report.py uses the default instead.",
-    "cleanup": "Nothing reads [cleanup] yet: .\\cleanup.ps1 still uses the SETTINGS block at the top of "
-               "cleanup.ps1.",
+    "cleanup": ".\\cleanup.ps1 won't run until it's fixed.",
     "move": "move_off_c.py won't run until it's fixed.",
     "tidy": "tidy_folder.py (and the weekly sort) won't run until it's fixed.",
     "tidy.extensions": "tidy_folder.py (and the weekly sort) won't run until it's fixed.",

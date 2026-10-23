@@ -1,46 +1,19 @@
 <#
-cleanup.ps1 - free up space on C:. You choose what to clean in the SETTINGS block below,
-usually after reading the output of disk_report.py.
+cleanup.ps1 - free up space on C:. You choose what to clean in the [cleanup] section of settings.ini,
+usually after reading the output of disk_report.py:
+    python pc_tidy.py settings edit
 
 Run in PowerShell as administrator, from this folder:
     .\cleanup.ps1 -DryRun    # shows what would be removed and how big it is, changes nothing
     .\cleanup.ps1            # does it (asks you to type yes first)
 
+It reads settings.ini with Python 3.9 or newer: this folder's .venv, the python of the window (an
+active conda or venv), or the py launcher. Set PCTIDY_PYTHON to the full path of python.exe to pick one.
+
 If PowerShell says running scripts is disabled, run this once:
     Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 #>
 param([switch]$DryRun)
-
-# ============================ SETTINGS: edit these ============================
-# $true = clean it, $false = skip it
-$CondaCache     = $true    # conda package cache ('conda clean --all'). Needs conda in this window
-$PipCache       = $true    # pip download cache
-$UvCache        = $true    # uv download cache
-$GpuShaderCache = $true    # NVIDIA / AMD / DirectX shader caches. They rebuild themselves
-$TempFiles      = $true    # your Temp folder and C:\Windows\Temp. Files in use are skipped
-$RecycleBin     = $true    # empty the Recycle Bin on every drive
-$CrashDumps     = $true    # crash dump files (*.dmp) left by Windows and apps
-$Hibernation    = $false   # turn off hibernation (and Fast Startup). Frees C:\hiberfil.sys
-$Installers     = $true    # installer files (.exe .msi .msix ...) in the folders below.
-                           # Check the dry-run list: a portable app that runs straight from
-                           # its .exe would be deleted too.
-
-# Folders to delete installers from (top level only, subfolders are left alone).
-# Sorted\To-Delete is where tidy_folder.py puts installers.
-$InstallerFolders = @("$env:USERPROFILE\Downloads", "$env:USERPROFILE\Sorted\To-Delete")
-
-# conda environments to delete, e.g. @("old-env", "test")
-$CondaEnvsToRemove = @()
-
-# Apps to uninstall. Use the exact name from Settings > Apps or from the disk report,
-# e.g. @("Docker Desktop", "Origin 2026 SR1")
-$AppsToUninstall = @()
-
-# Any other files or folders to delete. Wildcards (*) are allowed, e.g.
-#   @("C:\Program Files (x86)\Steam\userdata\*\3472040\local\tmp\replay.bin")
-$ExtraPathsToDelete = @()
-# ==============================================================================
-
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -48,6 +21,61 @@ if (-not $isAdmin) {
     Write-Host "Open PowerShell as administrator and run this again." -ForegroundColor Yellow
     exit 1
 }
+
+
+# ---------- settings: the [cleanup] section of settings.ini ----------
+function Find-Python {
+    # The first Python 3.9+ that really runs. The Microsoft Store's python.exe stub only says
+    # "Python was not found", so where it is says nothing: a candidate counts only if it runs.
+    $candidates = @()
+    if ($env:PCTIDY_PYTHON) { $candidates += ,@($env:PCTIDY_PYTHON) }
+    $candidates += ,@("$PSScriptRoot\.venv\Scripts\python.exe")
+    $candidates += ,@("python")
+    $candidates += ,@("py", "-3")
+    foreach ($c in $candidates) {
+        $exe = $c[0]
+        if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
+        $rest = @($c | Select-Object -Skip 1)
+        $answer = & $exe @rest -c "import sys; print(sys.version_info >= (3, 9))" 2>$null
+        if ($LASTEXITCODE -eq 0 -and "$answer".Trim() -eq "True") { return ,$c }
+    }
+    return $null
+}
+
+$python = Find-Python
+if (-not $python) {
+    Write-Host "cleanup.ps1 reads its settings with Python 3.9 or newer, and none was found." -ForegroundColor Yellow
+    Write-Host "Install Python (see README.md, step 1) or activate pc-tidy's environment, then run this again."
+    exit 1
+}
+$pyExe = $python[0]
+$pyArgs = @($python | Select-Object -Skip 1)
+$answer = & $pyExe @pyArgs "$PSScriptRoot\pc_tidy.py" cleanup-settings
+$code = $LASTEXITCODE
+$s = $null
+try { $s = ($answer -join "`n") | ConvertFrom-Json } catch { }
+if ($null -eq $s) {
+    Write-Host "Couldn't read the settings: python pc_tidy.py cleanup-settings ended with exit code $code." -ForegroundColor Red
+    exit 1
+}
+foreach ($m in @($s.messages)) { if ($m) { Write-Host $m -ForegroundColor Yellow } }
+if (-not $s.ok) { exit $code }      # a mistake in [cleanup]: the message above names its line
+
+$CondaCache     = [bool]$s.conda_cache
+$PipCache       = [bool]$s.pip_cache
+$UvCache        = [bool]$s.uv_cache
+$GpuShaderCache = [bool]$s.gpu_shader_cache
+$TempFiles      = [bool]$s.temp_files
+$RecycleBin     = [bool]$s.recycle_bin
+$CrashDumps     = [bool]$s.crash_dumps
+$Hibernation    = [bool]$s.hibernation
+$Installers     = [bool]$s.installers
+$InstallersMinAgeDays = [int]$s.installers_min_age_days
+$InstallerFolders   = @($s.installer_folders | Where-Object { $_ })
+$CondaEnvsToRemove  = @($s.conda_envs_to_remove | Where-Object { $_ })
+$AppsToUninstall    = @($s.apps_to_uninstall | Where-Object { $_ })
+$ExtraPathsToDelete = @($s.extra_paths_to_delete | Where-Object { $_ })   # pc-tidy's safety check passed each one
+$TempOk = [bool]$s.temp_ok      # false if TEMP points at a drive root or a folder of yours
 
 $script:Estimate = 0.0
 $Drive = $env:SystemDrive   # usually C:
@@ -79,8 +107,9 @@ function Get-SizeBytes([string[]]$Paths) {
     return $total
 }
 
-function Remove-Paths([string]$Label, [string[]]$Paths) {
+function Remove-Paths([string]$Label, [string[]]$Paths, [string]$Note) {
     Write-Step $Label
+    if ($Note) { Write-Host "  $Note" -ForegroundColor Yellow }
     $size = Get-SizeBytes $Paths
     $script:Estimate += $size
     if ($DryRun) {
@@ -93,7 +122,8 @@ function Remove-Paths([string]$Label, [string[]]$Paths) {
     Write-Host "  removed about $(Gb $size) (files in use are skipped)"
 }
 
-# Folders that ExtraPathsToDelete may never point at, to protect against typos
+# Folders that ExtraPathsToDelete may never point at. pc-tidy's safety check (python pc_tidy.py
+# cleanup-settings) refuses far more, wildcards included; this stays as a second line of defence.
 $Protected = @($Drives | ForEach-Object { "$_\" }) + @("$Drive\", $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
                "$Drive\Users", $env:USERPROFILE, "$env:USERPROFILE\Documents", "$env:USERPROFILE\Desktop") |
     Where-Object { $_ } | ForEach-Object { $_.Replace('/', '\').TrimEnd('\').ToLower() }
@@ -117,13 +147,13 @@ if ($TempFiles)      { $plan += "Temp files" }
 if ($RecycleBin)     { $plan += "Recycle Bin" }
 if ($CrashDumps)     { $plan += "crash dumps" }
 if ($Hibernation)    { $plan += "turn off hibernation" }
-if ($Installers)     { $plan += "installers in: $($InstallerFolders -join ', ')" }
+if ($Installers)     { $plan += "installers older than $InstallersMinAgeDays days in: $($InstallerFolders -join ', ')" }
 foreach ($e in $CondaEnvsToRemove)  { $plan += "conda env '$e'" }
 foreach ($a in $AppsToUninstall)    { $plan += "uninstall '$a'" }
 foreach ($p in $ExtraPathsToDelete) { $plan += "delete $p" }
 
 if (-not $plan) {
-    Write-Host "Nothing is switched on. Edit the SETTINGS block at the top of cleanup.ps1."
+    Write-Host "Nothing is switched on in the [cleanup] section of settings.ini. Change it with: python pc_tidy.py settings edit"
     exit
 }
 if ($DryRun) { Write-Host "DRY RUN: nothing will be changed. Planned steps:" -ForegroundColor Green }
@@ -178,7 +208,13 @@ if ($GpuShaderCache) {
         "$env:LOCALAPPDATA\AMD\DxCache\*", "$env:LOCALAPPDATA\AMD\GLCache\*",
         "$env:LOCALAPPDATA\D3DSCache\*")
 }
-if ($TempFiles) { Remove-Paths "Temp files" @("$env:TEMP\*", "$env:SystemRoot\Temp\*") }
+if ($TempFiles) {
+    if ($TempOk) { Remove-Paths "Temp files" @("$env:TEMP\*", "$env:SystemRoot\Temp\*") }
+    else {
+        Remove-Paths "Temp files" @("$env:SystemRoot\Temp\*") ("Your TEMP variable points at $env:TEMP, which isn't " +
+            "a temp folder, so it is left alone. Only $env:SystemRoot\Temp is cleaned.")
+    }
+}
 if ($CrashDumps) {
     Remove-Paths "Crash dumps" @(
         "$env:SystemRoot\LiveKernelReports\*.dmp", "$env:SystemRoot\LiveKernelReports\*\*.dmp",
@@ -201,12 +237,17 @@ if ($RecycleBin) {
 if ($Installers) {
     Write-Step "Installers in $($InstallerFolders -join ', ')"
     $installerTypes = @(".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle")
-    $files = @(foreach ($folder in $InstallerFolders) {
+    $cutoff = (Get-Date).AddDays(-$InstallersMinAgeDays)    # one you just downloaded may not be installed yet
+    $all = @(foreach ($folder in $InstallerFolders) {
         Get-ChildItem -LiteralPath $folder -File -Force -ErrorAction SilentlyContinue |
             Where-Object { $installerTypes -contains $_.Extension.ToLower() }
     })
+    $files = @($all | Where-Object { $_.LastWriteTime -lt $cutoff })
     $size = [double](($files | Measure-Object -Property Length -Sum).Sum)
     $script:Estimate += $size
+    $newer = $all.Count - $files.Count
+    if ($newer -gt 0) { Write-Host "  $newer changed in the last $InstallersMinAgeDays days, left alone (installers_min_age_days)" }
+    $noun = if ($files.Count -eq 1) { "file" } else { "files" }
     if ($files.Count -eq 0) {
         Write-Host "  none found"
     } else {
@@ -215,10 +256,10 @@ if ($Installers) {
         }
         if ($files.Count -gt 40) { Write-Host "  ... and $($files.Count - 40) more" }
         if ($DryRun) {
-            Write-Host "  would delete $($files.Count) files, about $(Gb $size)"
+            Write-Host "  would delete $($files.Count) $noun, about $(Gb $size)"
         } else {
             $files | Remove-Item -Force -ErrorAction SilentlyContinue
-            Write-Host "  deleted $($files.Count) files, about $(Gb $size)"
+            Write-Host "  deleted $($files.Count) $noun, about $(Gb $size)"
         }
     }
 }
