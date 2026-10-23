@@ -27,9 +27,9 @@ import subprocess
 import sys
 import time
 
-from . import _win, context, executor, journal, lock, recovery, safety, settings, ui, volume
+from . import _win, context, executor, journal, leftovers, lock, recovery, safety, settings, ui, volume
 from .fixes import gb
-from .plan import Plan
+from .plan import Plan, fingerprint
 
 COMMAND = "pc-tidy"
 FULL_C = 256 * 1024 ** 2         # under this much free, C: counts as full
@@ -262,13 +262,26 @@ class DryRun:
         problem = safety.why_refused(path, "delete", self.ctx)
         if problem:
             self.refused.append((path, problem))
-            return
+            return None
         try:
-            self.deletes.add_delete(path)
+            return self.deletes.add_delete(path)
         except FileNotFoundError:
-            pass
+            return None
+
+    def _duplicates(self, pairs):
+        """Each extra copy, with the copy that stays: the executor deletes the extra only while that
+        copy is still there, unchanged."""
+        for extra, keep, extra_fp, keep_fp in pairs:
+            if leftovers._fp(extra) != extra_fp or leftovers._fp(keep) != keep_fp:
+                self.refused.append((extra, "it or the copy that would stay changed since the scan"))
+                continue
+            action = self._add(extra)
+            if action is not None:
+                action["keep"], action["keep_fp"] = keep, fingerprint(keep)
 
     def _deletes(self, row, a):
+        if a["delete"] == "duplicates":
+            return self._duplicates(a["pairs"])
         places = a["places"]
         if row["id"] == "installers":           # listed again now: one may have changed since the scan
             from . import fixes
@@ -321,7 +334,8 @@ class DryRun:
                     "Undo with: python move_off_c.py --undo"]
         size = sum(x.get("bytes", 0) for x in acts)
         lines = [f"{head}: delete {len(acts):,} item{'s' if len(acts) != 1 else ''}, {gb(size)}"]
-        lines += [f"        {x['path']}" for x in acts[:SHOW_ITEMS]]
+        lines += [f"        {x['path']}" + (f"   (the copy in {os.path.dirname(x['keep'])} stays)" if x.get("keep") else "")
+                  for x in acts[:SHOW_ITEMS]]
         if len(acts) > SHOW_ITEMS:
             lines.append(f"        ... and {len(acts) - SHOW_ITEMS:,} more")
         return lines
@@ -332,7 +346,8 @@ class DryRun:
             lines.append(f"{row['n']}  {row['title']}")
             for a in self.by_fix.get(row["id"], []):
                 if a["op"] in ("delete", "delete_tree"):
-                    lines.append(f"    delete  {a['path']}  ({gb(a.get('bytes', 0))})")
+                    stays = f", the copy {a['keep']} stays" if a.get("keep") else ""
+                    lines.append(f"    delete  {a['path']}  ({gb(a.get('bytes', 0))}{stays})")
                 elif a["op"] == "move":
                     lines.append(f"    move    {a['src']}  ->  {a['dst']}  ({gb(a['bytes'])})")
                 else:
@@ -554,7 +569,7 @@ def menu(ctx, no_llm=False, no_open=False):
             cfg = settings.load(ctx)
             free_space(ctx, cfg, show_report(ctx, cfg, no_llm, no_open))
         elif choice == "2":
-            sort_downloads(no_llm)
+            sort_downloads(ctx, no_llm)
         elif choice == "3":
             _script("move_off_c.py", "--undo")
         elif choice == "4":
@@ -573,8 +588,9 @@ def menu(ctx, no_llm=False, no_open=False):
             print("Type a number from 1 to 7, or press Enter to close.")
 
 
-def sort_downloads(no_llm=False):
-    """tidy_folder.py's preview, then --apply after a yes. Moves only, and --undo puts them back."""
+def sort_downloads(ctx, no_llm=False):
+    """tidy_folder.py's preview, then --apply after a yes, then what's left in your folders. Moves
+    only, and --undo puts them back."""
     extra = ["--no-llm"] if no_llm else []
     script = os.path.join(context.APP_DIR, "tidy_folder.py")
     preview = subprocess.run([sys.executable, script, *extra], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -583,7 +599,9 @@ def sort_downloads(no_llm=False):
     print(out, end="")
     if preview.returncode or "Nothing to sort." in out:
         return
-    if ui.ask_yes("Type yes to sort them: "):
-        _script("tidy_folder.py", "--apply", *extra, stdin=subprocess.DEVNULL)
-    else:
+    if not ui.ask_yes("Type yes to sort them: "):
         print("Nothing was moved.")
+        return
+    _script("tidy_folder.py", "--apply", *extra, stdin=subprocess.DEVNULL)
+    print("\n".join(leftovers.render(leftovers.analyse(ctx, settings.load(ctx)), gb)))
+    print("The extra copies in Downloads, Desktop and Sorted are in the fixes: type 1 below for a new list.")

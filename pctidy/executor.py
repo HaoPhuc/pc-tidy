@@ -311,6 +311,9 @@ class _Runner:
             self._same_as_planned(a["src"], a["fp"])
         elif op in ("delete", "delete_tree"):
             self._same_as_planned(a["path"], a["fp"])
+            if a.get("keep") and not unchanged(fingerprint(a["keep"]), a.get("keep_fp")):
+                # an extra copy of a duplicate goes only while the copy that stays is still there, as it was
+                raise Skip("the copy that would stay changed or went since the dry run, so this one stays too")
         elif op == "rmdir":
             if not os.path.isdir(lp(a["path"])):
                 raise Skip("it's already gone")

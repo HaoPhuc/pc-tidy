@@ -94,6 +94,12 @@ python disk_report.py
 It scans every drive (a few minutes each), saves `disk_report.pdf` and opens it. The report has these sections:
 
 - **Fixes for C:**: what to do first, as a numbered list. Lowest risk first (things that come back by themselves), then what can be undone or rebuilt, then what is gone for good. Each fix says how much it frees, measured file by file (a file shared through a hard link counts as nothing, since deleting it frees nothing), how risky it is, exactly how to do it, and how to undo it. A running total and one line say which fixes bring C: to 15% free (`target_free_percent` in `settings.ini`). Run the report as administrator to measure the Windows folders too.
+- **What's left in your folders** (Desktop, Documents, Downloads, Music, Pictures, Videos and Sorted):
+  - **Duplicates:** files with exactly the same content. Hard links are left out, since they're one file. Loose extra copies (right in Downloads or Desktop, or in a Sorted folder), where copies end up by accident, become a fix; an identical copy always stays. Copies deeper in a folder, such as an unpacked app, are only listed.
+  - **Big files you haven't opened for months:** these can be moved off C:, never deleted.
+  - **Empty folders** and **projects** (folders with `.git`, or a `package.json`, `requirements.txt`, `Cargo.toml` ... with their source). A project untouched for 30 days offers its venv or Rust `target` folder as a fix, since those can be rebuilt.
+
+  Checking for duplicates never changes when a file was last opened.
 - **Drives**: used and free space on each drive.
 - **Where the space goes**: everything sorted into system, apps, games, dev and science tools, caches and temp, and personal files.
 - **Things you can clean up**: items the script recognizes, each with what to do. Many say `cleanup.ps1: <Setting>`, which is the setting that cleans it.
@@ -220,6 +226,7 @@ python pc_tidy.py settings show    # shows every value and where it came from
 |---|---|---|
 | `[report]` | `disk_report.py` | `min_gb` and `max_depth` for the folder tree, `top_files`, `cleanup_min_gb`, `target_free_percent` |
 | `[ai]` | `tidy_folder.py`, `disk_report.py` | `enabled`, `model` (any Ollama model, for example a bigger one like `qwen2.5:7b` for better descriptions), `url` (only this PC is allowed), `timeout_seconds`, how many folders and apps the AI describes |
+| `[leftovers]` | `disk_report.py` | `extra_folders` to look in too, `duplicate_min_mb`, `stale_min_mb` and `stale_after_days` for big unopened files, `hash_budget_gb` |
 | `[move]` | `move_off_c.py` | `min_gb`, `dest_folder_name` |
 | `[tidy]` | `tidy_folder.py` and the weekly task | `source`, `dest`, `archive_after_days`, `skip_newer_than_min`, `rename_with_ai`, `categories` (the folders the AI picks from) |
 | `[tidy.extensions]` | `tidy_folder.py` and the weekly task | `extension = folder`, for example `.pdf = Papers` |

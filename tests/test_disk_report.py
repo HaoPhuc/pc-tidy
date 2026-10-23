@@ -5,7 +5,8 @@ from pypdf import PdfReader
 import scanner
 from support import Runner, make_fake_profile
 
-SECTIONS = ["DISK REPORT", "FIXES FOR C:, LOWEST RISK FIRST", "DRIVES", "WHERE THE SPACE GOES",
+SECTIONS = ["DISK REPORT", "FIXES FOR C:, LOWEST RISK FIRST", "WHAT'S LEFT IN YOUR FOLDERS", "DRIVES",
+            "WHERE THE SPACE GOES",
             "THINGS YOU CAN CLEAN UP", "BIGGEST FOLDERS ON", "BIGGEST FILES", "GOOD TO KNOW"]
 
 
@@ -39,6 +40,8 @@ def test_the_report_leads_with_the_ranked_fixes(tmp_path):
     assert "Only part of C: was scanned" in fixes
     page1 = PdfReader(str(tmp_path / "report.pdf")).pages[0].extract_text()
     assert page1.index("Fixes for C:") < page1.index("pip and uv caches") < page1.index("Empty the Recycle Bin")
+    pages = "".join(p.extract_text() for p in PdfReader(str(tmp_path / "report.pdf")).pages)
+    assert pages.index("Empty the Recycle Bin") < pages.index("What's left in your folders") < pages.index("Where the space goes")
 
 
 def test_a_pdf_open_in_a_viewer_doesnt_lose_the_report(run, profile, tmp_path):
