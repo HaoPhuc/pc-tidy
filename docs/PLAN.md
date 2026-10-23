@@ -9,7 +9,7 @@ Updated 2026-10-23. The plan below is the one chosen at the start, unchanged. Th
 | M1 Tests and CI | Done in PR #5 |
 | M2 Safety core | Done in PR #6. Fixes problems 3, 4, 5, 13 and 15 |
 | M3 One settings file | Done in PR #7 |
-| M4 cleanup.ps1 | **Lean version**: `cleanup.ps1` reads `[cleanup]` from `settings.ini` (through `python pc_tidy.py cleanup-settings`), and problems 1 and 14 are fixed. Deferred: the Python port with exact per-file dry-run lists (problem 2), the Recycle Bin and conda measurements, the other-account check (problem 8) and winget's agreement prompt (problem 9). |
+| M4 cleanup.ps1 | **Lean version, in PR #8**: `cleanup.ps1` reads `[cleanup]` from `settings.ini` (through `python pc_tidy.py cleanup-settings`), and problems 1 and 14 are fixed. Deferred: the Python port with exact per-file dry-run lists (problem 2), the Recycle Bin and conda measurements, the other-account check (problem 8) and winget's agreement prompt (problem 9). |
 | M5 Report, M6 Guided entry point | Next, ahead of more infrastructure: what users see comes first |
 | M7 What's left, M8 Polish | After M5 and M6 |
 
