@@ -371,6 +371,38 @@ def node_fixes(scan, ctx, cfg):
     return out
 
 
+def duplicate_fix(leftovers, ctx):
+    """The extra copies in Downloads, Desktop and Sorted (pctidy/leftovers.py found them): one fix."""
+    pairs = [p for p in (leftovers or {}).get("pairs", []) if not ctx.sandbox or ctx.in_sandbox(p[0])]
+    if not pairs:
+        return None
+    fix = Fix("duplicates", f"Extra copies of files in Downloads, Desktop or Sorted ({len(pairs)})", "Medium",
+              "An identical copy of each stays where it is",
+              "python pc_tidy.py (it shows each copy that goes and the one that stays, then asks)",
+              "None, but the identical copy stays", by="pc-tidy")
+    fix.files = {_key(extra): file_bytes(extra) for extra, _keep, _efp, _kfp in pairs}
+    fix.bytes = sum(fix.files.values())
+    fix.action = {"delete": "duplicates", "pairs": pairs}
+    return fix
+
+
+def rebuildable_fixes(leftovers, ctx):
+    """A venv or Rust's target folder in a project that hasn't changed for 30 days."""
+    out = []
+    for r in (leftovers or {}).get("rebuildable", []):
+        name = os.path.basename(r["project"])
+        if r["kind"] == "venv":
+            title, why, undo = (f"Python virtual environment of {name}", "Can be made again from the project's "
+                                "requirements", f"python -m venv {os.path.basename(r['path'])}, then pip install")
+        else:
+            title, why, undo = f"Rust build output of {name}", "cargo build makes it again", f"cargo build in {r['project']}"
+        fix = Fix(f"rebuild:{r['path']}", title, "Medium", why, f"Delete the folder {r['path']}", undo)
+        fix.action = {"delete": "files", "places": [r["path"]]}
+        fix.where = r["path"]
+        out.append(measure(fix, ctx, contents=[r["path"]]))
+    return out
+
+
 def move_fixes(move):
     """Moves to another volume, from move_off_c.py's candidates (disk_report.py passes them in)."""
     out = []
@@ -477,8 +509,9 @@ def on_system_drive(path, ctx):
     return norm(path).startswith(norm(ctx.system_drive))
 
 
-def build(scan, cfg, ctx=None, move=None, progress=True):
-    """The ranked fixes for the system drive, as a dict for the report."""
+def build(scan, cfg, ctx=None, move=None, progress=True, leftovers=None):
+    """The ranked fixes for the system drive, as a dict for the report. `leftovers` (from
+    pctidy/leftovers.py) adds the extra copies of files and rebuildable project folders."""
     ctx = ctx or context.current()
     drive = ctx.system_drive.rstrip("\\")
     out = {"drive": drive, "rows": [], "notes": [], "scanned": True, "target_line": ""}
@@ -508,6 +541,7 @@ def build(scan, cfg, ctx=None, move=None, progress=True):
     step("Node.js packages")
     fixes += node_fixes(scan, ctx, cfg)
     fixes += move_fixes(move)
+    fixes += [duplicate_fix(leftovers, ctx)] + rebuildable_fixes(leftovers, ctx)
     fixes += [hibernation_fix(ctx, cfg), recycle_bin_fix(ctx, cfg), windows_old_fix(scan, ctx)]
     if progress:
         sys.stderr.write("\r" + " " * 78 + "\r")

@@ -199,6 +199,54 @@ def fixes_section(story, f):
         story += [Paragraph(x, S["bullet"], bulletText=BULLET) for x in lines]
 
 
+def _date(ts):
+    import time
+    return time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else "never"
+
+
+def leftovers_section(story, lo, limit=15):
+    """Duplicates, big files not opened for months, empty folders and projects in your folders."""
+    names = ", ".join(os.path.basename(r) for r in lo["roots"])
+    section(story, "What's left in your folders", f"In {t(names)}: what sorting leaves behind.")
+    g = fixes.gb
+
+    story.append(P("<b>Duplicates</b>", "body"))
+    if lo["duplicates"]:
+        story.append(P(t(f"{len(lo['pairs'])} loose extra copies in Downloads, Desktop or Sorted are in the fixes above "
+                         f"({g(lo['offered_bytes'])}). Decide about the others yourself."), "intro"))
+        rows = []
+        for r in lo["duplicates"][:limit]:
+            cells = [P(f"<b>keep</b> {t(r['keep'])}", "path")]
+            for x in r["extras"]:
+                tag = "extra" if x["offered"] else ("in a project, not offered" if x["in_project"] else "yours to decide")
+                cells.append(P(f"<b>{tag}</b> {t(x['path'])}", "path"))
+            rows.append([P(t(g(r["size"])), "size"), cells])
+        story.append(table(["Size", "Copies"], rows, [17 * mm, FRAME_W - 17 * mm]))
+    else:
+        story.append(P("None found.", "intro"))
+
+    what = "opened" if lo["recorded"] else "changed"
+    note = "" if lo["recorded"] else " Windows isn't recording when files are opened on this PC, so this is when they last changed."
+    story.append(P(f"<b>Big files not {what} in {lo['stale_after_days']} days</b>", "body"))
+    story.append(P(t(f"{lo['stale_min_mb']:g} MB or more. They can move to another drive (undoable), never deleted: "
+                     f"old doesn't mean unneeded.{note}"), "intro"))
+    if lo["stale"]:
+        rows = [[P(t(g(s["size"])), "size"), P(t(s["path"]), "path"), P(t(_date(s["time"])), "path")]
+                for s in lo["stale"][:limit]]
+        story.append(table(["Size", "File", f"Last {what}"], rows, [17 * mm, FRAME_W - 42 * mm, 25 * mm]))
+
+    story.append(P(f"<b>Empty folders</b>: {len(lo['empty'])}", "body"))
+    for p in lo["empty"][:limit]:
+        story.append(Paragraph(t(p), S["bullet"], bulletText=BULLET))
+
+    story.append(P(f"<b>Projects</b>: {len(lo['projects'])}", "body"))
+    if lo["projects"]:
+        rows = [[P(t(g(p["bytes"])), "size"), P(t(p["path"]), "path"),
+                 P(t(f"{p['files']:,} files, last changed {_date(p['newest'])}"), "path")]
+                for p in lo["projects"][:limit]]
+        story.append(table(["Size", "Project", ""], rows, [17 * mm, FRAME_W - 62 * mm, 45 * mm]))
+
+
 def render(data, path):
     doc = SimpleDocTemplate(path, pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
                             topMargin=MARGIN, bottomMargin=18 * mm,
@@ -224,6 +272,8 @@ def render(data, path):
     m = data.get("move")
     if data.get("fixes"):
         fixes_section(story, data["fixes"])
+    if data.get("leftovers"):
+        leftovers_section(story, data["leftovers"])
 
     # --- categories ---
     if data["categories"]:

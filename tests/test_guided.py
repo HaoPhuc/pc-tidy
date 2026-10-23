@@ -141,6 +141,7 @@ def test_sort_downloads_from_the_menu(run, profile):
     assert "Type yes below to move them" in result.stdout
     assert (profile / "Sorted" / "Pictures" / "photo.jpg").exists()
     assert not (profile / "Downloads" / "photo.jpg").exists()
+    assert "WHAT'S LEFT IN YOUR FOLDERS" in result.stdout          # shown after the sort
 
 
 def test_help_from_the_menu(run, profile):
@@ -219,3 +220,33 @@ def test_pc_tidy_cmd_works_from_any_folder(tmp_path):
                             input="\r\n", capture_output=True, text=True, env=env, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "usage: pc_tidy.py" in result.stdout
+
+
+def duplicates(profile):
+    keep = blob(profile / "Documents" / "thesis.pdf", 2, age_days=40)
+    extra = blob(profile / "Downloads" / "thesis (1).pdf", 2)
+    return keep, extra
+
+
+def test_extra_copies_go_and_the_kept_copy_stays(run, profile):
+    keep, extra = duplicates(profile)
+    result = guided_run(run, "1\nyes\n\n")
+
+    assert result.returncode == 0, result.output
+    assert f"{extra}   (the copy in {keep.parent} stays)" in result.stdout
+    assert not extra.exists() and keep.exists()
+
+
+def test_an_extra_copy_stays_if_the_kept_copy_changed_after_the_dry_run(run, profile):
+    keep, extra = duplicates(profile)
+    started = run.start("pc_tidy.py", "--no-llm", "--no-open")
+    answer_when(started, "Type the numbers of the fixes you want", "1\n")
+    started.wait_for("Type yes to do all of this")
+    with open(keep, "ab") as f:
+        f.write(b"edited since")
+    answer_when(started, "", "yes\n")
+    answer_when(started, "Type a number, or press Enter to close", "\n")
+
+    assert started.finish() == 3, started.output
+    assert extra.exists(), "the extra copy was deleted although the copy that stays had changed"
+    assert "the copy that would stay changed or went since the dry run, so this one stays too" in started.output

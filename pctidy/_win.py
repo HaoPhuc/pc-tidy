@@ -74,6 +74,7 @@ if ON_WINDOWS:
     _declare(advapi32.ConvertSidToStringSidW, _B, _P, ctypes.POINTER(_P))
     _declare(advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW, _B, _S, _D, ctypes.POINTER(_P), _PD)
     _declare(kernel32.GetCompressedFileSizeW, _D, _S, _PD)
+    _declare(kernel32.SetFileTime, _B, _H, _P, _P, _P)
 
 
 def _error(what):
@@ -184,6 +185,50 @@ def compressed_size(path):
     if low == 0xFFFFFFFF and ctypes.get_last_error():
         raise _error(f"can't read the size on disk of {path}")
     return (high.value << 32) + low
+
+
+_GENERIC_READ = 0x80000000
+_FILE_WRITE_ATTRIBUTES = 0x100
+_FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+
+
+class _FileTime(ctypes.Structure):
+    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+
+def open_untouched(path):
+    """A file opened for reading (a binary file object) without changing its last-access time, so
+    reading it for the duplicates check doesn't make it look recently opened. SetFileTime with
+    0xFFFFFFFF in both halves tells NTFS not to update that time for anything done through this
+    handle. Raises OSError (access denied, say): the caller then leaves the file unread."""
+    import msvcrt
+    handle = kernel32.CreateFileW(long_path(path), _GENERIC_READ | _FILE_WRITE_ATTRIBUTES, _FILE_SHARE_ALL, None,
+                                  _OPEN_EXISTING, _FILE_FLAG_SEQUENTIAL_SCAN, None)
+    if handle == INVALID_HANDLE_VALUE:
+        raise _error(f"can't open {path}")
+    keep = _FileTime(0xFFFFFFFF, 0xFFFFFFFF)
+    if not kernel32.SetFileTime(handle, None, ctypes.byref(keep), None):
+        err = _error(f"can't keep the last-access time of {path}")
+        kernel32.CloseHandle(handle)
+        raise err
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except OSError:
+        kernel32.CloseHandle(handle)
+        raise
+    return os.fdopen(fd, "rb")
+
+
+def last_access_recorded():
+    """True if Windows records when files are opened (the lowest bit of NtfsDisableLastAccessUpdate
+    is 0, as 'fsutil behavior query disablelastaccess' shows). False if it doesn't or can't be read."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            value, _kind = winreg.QueryValueEx(key, "NtfsDisableLastAccessUpdate")
+    except OSError:
+        return False
+    return isinstance(value, int) and not value & 1
 
 
 class _RecycleBinInfo(ctypes.Structure):

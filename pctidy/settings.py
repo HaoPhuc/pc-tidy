@@ -108,6 +108,13 @@ SECTIONS = {
         Key("apps_to_uninstall", "names", []),
         Key("extra_paths_to_delete", "deletes", []),
     ),
+    "leftovers": (
+        Key("extra_folders", "paths", []),
+        Key("duplicate_min_mb", "number", 1.0, 0, 1000000),
+        Key("stale_min_mb", "number", 500.0, 0, 10000000),
+        Key("stale_after_days", "int", 180, 1, 36500),
+        Key("hash_budget_gb", "number", 50.0, 0, 100000),
+    ),
     "move": (
         Key("min_gb", "number", 1.0, 0, 100000),
         Key("dest_folder_name", "folder", context.DEST_FOLDER_NAME),
@@ -146,6 +153,7 @@ CONSEQUENCES = {
     "ai": "tidy_folder.py sorts by its rules only (as with --no-llm) until it's fixed; "
           "disk_report.py uses the default instead.",
     "cleanup": ".\\cleanup.ps1 won't run until it's fixed.",
+    "leftovers": "disk_report.py uses the default instead.",
     "move": "move_off_c.py won't run until it's fixed.",
     "tidy": "tidy_folder.py (and the weekly sort) won't run until it's fixed.",
     "tidy.extensions": "tidy_folder.py (and the weekly sort) won't run until it's fixed.",

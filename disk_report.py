@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import classify
 import llm
 import move_off_c
-from pctidy import context, fixes, journal, settings
+from pctidy import context, fixes, journal, leftovers, settings
 from scanner import GB, Scan, clean_root, fixed_drives, fmt, norm, system_drive
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -183,8 +183,17 @@ def build_report(roots, use_llm=True, opts=None):
             "tips": move_off_c.move_tips(scan, home, min_bytes),
         }
 
+    # what's left in your folders: duplicates, big files not opened for months, empty folders, projects
+    cfg = getattr(opts, "cfg", None) or settings.load()
+    data["leftovers"] = leftovers.analyse(ctx, cfg)
+    if data["move"] and data["move"]["dest"]:
+        known = {norm(c["path"]) for c in data["move"]["candidates"]}
+        for s in data["leftovers"]["stale"]:       # offered for moving, never for deleting
+            if fixes.on_system_drive(s["path"], ctx) and norm(s["path"]) not in known:
+                data["move"]["candidates"].append({"path": s["path"], "size": s["size"], "kind": "file"})
+
     # the ranked fixes for C:, measured file by file; they lead the report
-    data["fixes"] = fixes.build(scan, getattr(opts, "cfg", None) or settings.load(), ctx, move=data["move"])
+    data["fixes"] = fixes.build(scan, cfg, ctx, move=data["move"], leftovers=data["leftovers"])
     data["notices"] = [n.get("message", "") for n in journal.notices(ctx)]
 
     llm_ok = use_llm and llm.available()
@@ -241,6 +250,8 @@ def render_text(data):
         out.append("  Clear these with: python pc_tidy.py status --dismiss")
     if data.get("fixes"):
         out += render_fixes(data["fixes"])
+    if data.get("leftovers"):
+        out += leftovers.render(data["leftovers"], fixes.gb)
 
     out.append("\nDRIVES")
     for d in data["drives"]:
@@ -311,7 +322,7 @@ def prepare(cfg):
     """The report's options from settings.ini, your own rules in place and the AI set up. A mistake
     in what the report reads is printed, and the report goes on with the defaults for it."""
     # its own sections, your rules, and sections with names nothing knows (a misspelt rule, say)
-    problems = [p for p in cfg.errors() if p.section in ("report", "ai", "move")
+    problems = [p for p in cfg.errors() if p.section in ("report", "ai", "move", "leftovers")
                 or settings.section_kind(p.section or "") in ("rule", None)]
     if problems:       # the report only reads: it goes on with the defaults, and says so
         print(f"{cfg.name} has mistakes. This report uses the defaults for them and skips broken rules:")

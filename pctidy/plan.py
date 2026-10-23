@@ -6,6 +6,7 @@ executed: editing it changes nothing, and failing to save it (C: full) stops not
 
 Actions are plain dicts, so they can go into the journal as they are:
     files    {op: "delete", path, fp: {size, mtime_ns, file_id}}
+             an extra copy of a duplicate also has keep and keep_fp: the copy that must stay
     folders  {op: "delete_tree", path, fp: {files, bytes, newest_mtime_ns}}
     moves    {op: "move", src, dst, src_volume, dst_volume, same_volume, fp}
     folders  {op: "rmdir", path}             an empty folder (pc-tidy's own, after an undo)
