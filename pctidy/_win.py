@@ -73,6 +73,7 @@ if ON_WINDOWS:
     _declare(advapi32.GetTokenInformation, _B, _H, ctypes.c_int, _P, _D, _PD)
     _declare(advapi32.ConvertSidToStringSidW, _B, _P, ctypes.POINTER(_P))
     _declare(advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW, _B, _S, _D, ctypes.POINTER(_P), _PD)
+    _declare(kernel32.GetCompressedFileSizeW, _D, _S, _PD)
 
 
 def _error(what):
@@ -173,6 +174,31 @@ def disk_free(path):
     if not kernel32.GetDiskFreeSpaceExW(path, ctypes.byref(free), ctypes.byref(total), ctypes.byref(_all)):
         raise _error(f"can't read the free space of {path}")
     return free.value, total.value
+
+
+def compressed_size(path):
+    """The bytes a compressed or sparse file really takes on disk. Raises OSError."""
+    high = wintypes.DWORD()
+    ctypes.set_last_error(0)
+    low = kernel32.GetCompressedFileSizeW(path, ctypes.byref(high))
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        raise _error(f"can't read the size on disk of {path}")
+    return (high.value << 32) + low
+
+
+class _RecycleBinInfo(ctypes.Structure):
+    if ctypes.sizeof(ctypes.c_void_p) == 4:
+        _pack_ = 1          # shellapi.h packs it to 1 byte on 32-bit Windows, 8 on 64-bit
+    _fields_ = [("cbSize", wintypes.DWORD), ("i64Size", ctypes.c_longlong), ("i64NumItems", ctypes.c_longlong)]
+
+
+def recycle_bin(root):
+    """(bytes, items) in the Recycle Bin of one drive, the numbers Explorer shows, or None."""
+    info = _RecycleBinInfo()
+    info.cbSize = ctypes.sizeof(info)
+    if ctypes.windll.shell32.SHQueryRecycleBinW(ctypes.c_wchar_p(root), ctypes.byref(info)) != 0:
+        return None
+    return info.i64Size, info.i64NumItems
 
 
 class _PropertyQuery(ctypes.Structure):

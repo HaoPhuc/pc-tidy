@@ -5,8 +5,8 @@ from pypdf import PdfReader
 import scanner
 from support import Runner, make_fake_profile
 
-SECTIONS = ["DISK REPORT", "DRIVES", "WHERE THE SPACE GOES", "THINGS YOU CAN CLEAN UP",
-            "BIGGEST FOLDERS ON", "BIGGEST FILES", "GOOD TO KNOW"]
+SECTIONS = ["DISK REPORT", "FIXES FOR C:, LOWEST RISK FIRST", "DRIVES", "WHERE THE SPACE GOES",
+            "THINGS YOU CAN CLEAN UP", "BIGGEST FOLDERS ON", "BIGGEST FILES", "GOOD TO KNOW"]
 
 
 def test_text_report_has_every_section(tmp_path):
@@ -16,10 +16,59 @@ def test_text_report_has_every_section(tmp_path):
 
     assert result.returncode == 0, result.output
     text = (tmp_path / "report.txt").read_text(encoding="utf-8")
-    for heading in SECTIONS:
-        assert heading in text, heading
+    positions = [text.find(heading) for heading in SECTIONS]
+    assert -1 not in positions, [h for h, p in zip(SECTIONS, positions) if p == -1]
+    assert positions == sorted(positions)          # in this order: the fixes for C: come first
     assert "pip download cache" in text           # the 110 MB file in AppData\Local\pip\cache
     assert "Text report saved to" in result.stdout
+
+
+def test_the_report_leads_with_the_ranked_fixes(tmp_path):
+    home = make_fake_profile(tmp_path / "big", big_cache=True)
+    result = Runner(home, tmp_path, [tmp_path]).python(
+        "disk_report.py", "--path", home, "--out", "report.txt", "--out", "report.pdf", "--no-llm", "--no-open",
+        env={"PCTIDY_TEST_RECYCLE_BIN": f"{3 * 1024 ** 3},312"})
+
+    assert result.returncode == 0, result.output
+    text = (tmp_path / "report.txt").read_text(encoding="utf-8")
+    fixes = text[text.index("FIXES FOR C:"):text.index("\nDRIVES")]
+    lines = fixes.splitlines()
+    assert lines[2].split()[:4] == ["1", "Low", "110", "MB"] and lines[2].endswith("pip and uv caches")
+    assert "How: cleanup.ps1: pip_cache, uv_cache (on). Undo: Not needed." in lines[3]
+    assert "High" in fixes and "Empty the Recycle Bin (312 items)" in fixes
+    assert "Only part of C: was scanned" in fixes
+    page1 = PdfReader(str(tmp_path / "report.pdf")).pages[0].extract_text()
+    assert page1.index("Fixes for C:") < page1.index("pip and uv caches") < page1.index("Empty the Recycle Bin")
+
+
+def test_a_pdf_open_in_a_viewer_doesnt_lose_the_report(run, profile, tmp_path):
+    from pctidy import _win
+    pdf = tmp_path / "disk_report.pdf"
+    pdf.write_bytes(b"%PDF-1.4 an older report")
+    # open it the way a PDF viewer does: no sharing, so nobody else can write it
+    handle = _win.kernel32.CreateFileW(str(pdf), 0x80000000, 0, None, 3, 0, None)
+    assert handle != _win.INVALID_HANDLE_VALUE
+    try:
+        result = run.python("disk_report.py", "--path", profile, "--no-llm", "--no-open")
+    finally:
+        _win.kernel32.CloseHandle(handle)
+
+    assert result.returncode == 0, result.output
+    assert "disk_report.pdf is open in another program, so this report goes to disk_report-" in result.stdout
+    others = list(tmp_path.glob("disk_report-*.pdf"))
+    assert len(others) == 1 and others[0].read_bytes()[:5] == b"%PDF-"
+    assert pdf.read_bytes() == b"%PDF-1.4 an older report"
+
+
+def test_a_missing_reportlab_stops_it_before_the_scan(run, profile, tmp_path):
+    from support import GUARD_DIR, ROOT, write
+    write(tmp_path / "no-reportlab" / "reportlab" / "__init__.py", "raise ImportError('not installed here')\n")
+    path = ";".join(str(p) for p in (tmp_path / "no-reportlab", GUARD_DIR, ROOT))
+    result = run.python("disk_report.py", "--path", profile, "--no-llm", "--no-open", env={"PYTHONPATH": path})
+
+    assert result.returncode == 1, result.output
+    assert "The PDF report needs reportlab, which isn't installed" in result.stdout
+    assert "Scanning" not in result.stdout
 
 
 def test_pdf_report_is_written(run, profile, tmp_path):
@@ -41,3 +90,19 @@ def test_scan_skips_junctions_and_counts_each_file_once(profile):
     assert scan.sizes[temp] == 100                 # tmp1.tmp only, not the junction's target
     assert scan.sizes[precious] == 1000
     assert str(profile / "AppData" / "Local" / "Temp" / "link-to-precious") not in scan.sizes
+
+
+def test_moves_to_another_volume_are_in_the_fixes(run, profile, tmp_path, ntfs_volume):
+    from support import write
+    lectures = profile / "Videos" / "Lectures"
+    write(lectures / "lecture2.mp4", b"\0" * 3 * 1024 ** 2)
+    write(tmp_path / "settings.ini", "[move]\nmin_gb = 0.001\n")
+
+    result = run.python("disk_report.py", "--path", profile, "--out", "report.txt", "--no-llm", "--no-open",
+                        extra_roots=[ntfs_volume.root])
+
+    assert result.returncode == 0, result.output
+    text = (tmp_path / "report.txt").read_text(encoding="utf-8")
+    fixes = text[text.index("FIXES FOR C:"):text.index("\nDRIVES")]
+    assert "Medium" in fixes and f"Move {lectures} to {ntfs_volume.root}From-C" in fixes
+    assert f'How: python move_off_c.py --path "{lectures}". Undo: python move_off_c.py --undo.' in fixes

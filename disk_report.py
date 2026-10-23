@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import classify
 import llm
 import move_off_c
-from pctidy import settings
+from pctidy import context, fixes, journal, settings
 from scanner import GB, Scan, clean_root, fixed_drives, fmt, norm, system_drive
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -35,9 +35,10 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def options(cfg=None):
-    """What the report reads: [report], [ai] and [move] (the "could move" section) of settings.ini."""
+    """What the report reads: [report], [ai] and [move] (the "could move" section) of settings.ini, and
+    [cleanup] for the fixes (which folders hold installers, which switches are on)."""
     cfg = cfg or settings.load()
-    return SimpleNamespace(report=cfg.section("report"), ai=cfg.section("ai"), move=cfg.section("move"))
+    return SimpleNamespace(report=cfg.section("report"), ai=cfg.section("ai"), move=cfg.section("move"), cfg=cfg)
 
 
 def build_tree(root, scan, opts=None):
@@ -169,11 +170,11 @@ def build_report(roots, use_llm=True, opts=None):
         data["info"].append({"size": size, "path": path, "what": rule.what, "todo": rule.todo})
     data["info"].sort(key=lambda x: -x["size"])
 
-    # moving personal files off C:
-    sysd = norm(system_drive())
-    home = next((k for k in scan.sizes if norm(k) == norm(os.path.expanduser("~"))), None)   # on-disk spelling
+    # moving personal files off C: (scanned from C:\ or from inside the profile)
+    ctx = context.current()
+    home = next((k for k in scan.sizes if norm(k) == norm(ctx.profile)), None)   # on-disk spelling
     data["move"] = None
-    if any(norm(r) == sysd for r in roots) and home:
+    if home and any(fixes.on_system_drive(r, ctx) for r in roots):
         dest = move_off_c.default_dest(opts=opts.move)
         min_bytes = opts.move.min_gb * GB
         data["move"] = {
@@ -181,6 +182,10 @@ def build_report(roots, use_llm=True, opts=None):
             "candidates": move_off_c.move_candidates(scan, home, min_bytes) if dest else [],
             "tips": move_off_c.move_tips(scan, home, min_bytes),
         }
+
+    # the ranked fixes for C:, measured file by file; they lead the report
+    data["fixes"] = fixes.build(scan, getattr(opts, "cfg", None) or settings.load(), ctx, move=data["move"])
+    data["notices"] = [n.get("message", "") for n in journal.notices(ctx)]
 
     llm_ok = use_llm and llm.available()
     apps = classify.installed_apps()
@@ -202,6 +207,26 @@ def build_report(roots, use_llm=True, opts=None):
     return data
 
 
+def render_fixes(f):
+    """The ranked fixes for C:, as lines of text."""
+    out = [f"\nFIXES FOR {f['drive']}, LOWEST RISK FIRST"]
+    if f.get("size"):
+        out.append(f"  {f['drive']} has {f['free'] / GB:.1f} GB free of {f['size'] / GB:.0f} GB "
+                   f"({f['free'] / f['size'] * 100:.0f}%).")
+    if f["scanned"] and not f["rows"]:
+        out.append("  Nothing found that is worth doing.")
+    for n, r in enumerate(f["rows"], 1):
+        total = f"total {fixes.gb(r['total'])}" if r["total"] is not None else ""
+        out.append(f"  {n:>2}  {r['risk']:<6}  {r['size']:>22}  {total:<16}  {r['title']}")
+        out.append(f"      {r['why']}. How: {r['how']}. Undo: {r['undo']}.")
+        if r["note"]:
+            out.append(f"      {r['note']}")
+    if f.get("target_line"):
+        out.append(f"  {f['target_line']}")
+    out += [f"  {n}" for n in f["notes"]]
+    return out
+
+
 def render_text(data):
     out = [f"DISK REPORT  {data['generated']}  {data['computer']}"]
     s = data["stats"]
@@ -210,6 +235,12 @@ def render_text(data):
         out.append("\nSETTINGS.INI HAS MISTAKES (this report used the defaults for them, and skipped broken rules)")
         out += [f"  {p}" for p in data["settings_problems"]]
         out.append("  Fix them with: python pc_tidy.py settings edit")
+    if data.get("notices"):
+        out.append("\nNEEDS YOUR ATTENTION (runs nobody was watching couldn't do everything)")
+        out += [f"  {n}" for n in data["notices"]]
+        out.append("  Clear these with: python pc_tidy.py status --dismiss")
+    if data.get("fixes"):
+        out += render_fixes(data["fixes"])
 
     out.append("\nDRIVES")
     for d in data["drives"]:
@@ -301,12 +332,22 @@ def main():
     opts.problems = [cfg.describe(p) for p in problems]
     llm.configure(opts.ai)
 
+    outs = args.out or ["disk_report.pdf"]
+    if any(o.lower().endswith(".pdf") for o in outs):
+        try:
+            import pdf_report  # noqa: F401  (now, not after a scan of several minutes)
+        except ImportError as e:
+            print(f"The PDF report needs reportlab, which isn't installed ({e}).\n"
+                  "Run: pip install -r requirements.txt   (or get a text report with --out report.txt)")
+            return 1
+    outs = [writable(o) for o in outs]
+
     roots = [clean_root(p) for p in (args.path or fixed_drives())]
     data = build_report(roots, use_llm=not args.no_llm and opts.ai.enabled, opts=opts)
     text = render_text(data)
     print("\n" + text)
 
-    for out in args.out or ["disk_report.pdf"]:
+    for out in outs:
         if out.lower().endswith(".pdf"):
             import pdf_report
             pdf_report.render(data, out)
@@ -317,7 +358,23 @@ def main():
             with open(out, "w", encoding="utf-8") as f:
                 f.write(text + "\n")
             print(f"\nText report saved to {os.path.abspath(out)}")
+    return 0
+
+
+def writable(out):
+    """The report file to write: `out`, or a dated name next to it if a program (a PDF viewer, say)
+    has `out` open, so the scan isn't lost to an error at the very end."""
+    if not os.path.exists(out):
+        return out
+    try:
+        with open(out, "r+b"):
+            return out
+    except PermissionError:
+        stem, ext = os.path.splitext(out)
+        other = f"{stem}-{datetime.now():%Y-%m-%d-%H%M%S}{ext}"
+        print(f"{out} is open in another program, so this report goes to {other} instead.")
+        return other
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
