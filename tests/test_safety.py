@@ -248,6 +248,22 @@ def test_temp_check(fake, temp, ok):
         assert problem == f"Your TEMP variable points at {temp}, which isn't a temp folder. The Temp fix was skipped."
 
 
+def test_a_temp_folder_with_pc_tidy_in_it_says_so(fake, tmp_path):
+    """Run straight from a ZIP, Explorer unpacks pc-tidy into Temp: cleaning Temp would delete it."""
+    temp = f"{tmp_path}\\{LOCAL}\\Temp".replace("/", "\\")
+    ctx = context_for(fake, TEMP=temp)
+    ctx.app_dir = temp + "\\pc-tidy"
+    assert safety.temp_problem(ctx).startswith(f"pc-tidy's own folder ({ctx.app_dir}) is inside your Temp folder, "
+                                               "so the Temp fix was skipped")
+
+
+def test_a_drive_root_temp_says_so_even_with_pc_tidy_on_that_drive(fake):
+    """Seen on CI, where the repository is on D: and a test sets TEMP=D:\\."""
+    ctx = context_for(fake, TEMP="D:\\")
+    ctx.app_dir = "D:\\a\\pc-tidy\\pc-tidy"
+    assert safety.temp_problem(ctx) == "Your TEMP variable points at D:\\, which isn't a temp folder. The Temp fix was skipped."
+
+
 def test_a_bad_temp_turns_off_the_temp_row(fake, tmp_path):
     packages = f"{tmp_path}\\{LOCAL}\\Packages".replace("/", "\\")
     ctx = context_for(fake, TEMP=packages)
