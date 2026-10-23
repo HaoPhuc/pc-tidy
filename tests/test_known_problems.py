@@ -5,13 +5,15 @@ milestone that fixes it lands, its test starts passing, strict=True turns that X
 and the xfail mark is removed so the test guards the fix from then on. raises=AssertionError keeps an
 unrelated crash from counting as the known failure.
 
-Fixed in M2 (the safety core): 3, 4, 5, 13, 15. Still pinned: 1 and 14 (cleanup.ps1, M4).
+Fixed in M2 (the safety core): 3, 4, 5, 13, 15. Fixed in M4 (cleanup.ps1 on settings.ini): 1, 14.
+Nothing is pinned any more; known() stays for the next problem found.
 """
 
 import pytest
 
-from support import snapshot, write
-from test_cleanup_ps1 import cleanup_copy, needs_admin, section
+from pctidy import context, safety, settings
+from support import ROOT, snapshot, write
+from test_cleanup_ps1 import cleanup_settings, needs_admin, section
 
 
 def known(number, why):
@@ -24,16 +26,26 @@ def require(ok, output):
         pytest.fail(f"the test setup didn't work:\n{output}")
 
 
+def test_a_wildcard_under_a_drive_root_is_refused(subst_drive):
+    """Problem 1, fixed in M4: X:\\* is refused even when X: is a subst letter, which resolves to a
+    folder. (Test-Protected in the old cleanup.ps1 only refused a path that is exactly a protected folder.)"""
+    problem = safety.why_refused(subst_drive.root + "*", "delete", context.current())
+    assert problem and "a wildcard directly under a drive root could empty the drive" in problem, problem
+
+
 @needs_admin
-@known(1, "Test-Protected only refuses a path that is exactly a protected folder")
 def test_extra_paths_refuse_a_wildcard_under_a_drive_root(run, tmp_path, subst_drive):
+    """Problem 1, fixed in M4: cleanup.ps1 stops at the line, before it does anything."""
     write(subst_drive.target / "everything.txt", b"all of drive X:")
-    script = cleanup_copy(tmp_path, extra_paths=[subst_drive.root + "*"])
+    cleanup_settings(tmp_path, extra_paths=[subst_drive.root + "*"])
 
-    result = run.powershell(script, "-DryRun")      # a dry run: nothing is deleted either way
+    result = run.powershell(ROOT / "cleanup.ps1", "-DryRun")      # a dry run: nothing is deleted either way
 
-    require(result.returncode == 0, result.output)
-    assert "refused" in section(result.output, f"Delete {subst_drive.root}*")
+    assert result.returncode == settings.EXIT, result.output
+    assert (f"settings.ini line 12 in [cleanup]: extra_paths_to_delete '{subst_drive.root}*' is refused: "
+            "a wildcard directly under a drive root could empty the drive.") in result.output
+    assert "DRY RUN" not in result.output
+    assert (subst_drive.target / "everything.txt").exists()
 
 
 def test_tidy_never_overwrites_a_file_that_appears_after_the_plan(tmp_path):
@@ -111,16 +123,21 @@ def test_tidy_refuses_to_sort_a_profile_folder(run, profile, tmp_path):
 
 
 @needs_admin
-@known(14, "the Temp step uses $env:TEMP as it is, even when it points at a drive root")
 def test_temp_step_refuses_a_temp_variable_that_points_at_a_drive_root(run, tmp_path, subst_drive):
+    """Problem 14, fixed in M4: a TEMP that isn't a temp folder is left alone (the old cleanup.ps1
+    emptied "$env:TEMP\\*" whatever it pointed at); Windows\\Temp is still cleaned."""
     write(subst_drive.target / "not-temp.txt", b"someone's file")
-    script = cleanup_copy(tmp_path, switches_on={"TempFiles"})
+    cleanup_settings(tmp_path, switches_on={"temp_files"})
 
-    result = run.powershell(script, "-DryRun", extra_env={"TEMP": subst_drive.root, "TMP": subst_drive.root})
+    result = run.powershell(ROOT / "cleanup.ps1", "-DryRun",
+                            extra_env={"TEMP": subst_drive.root, "TMP": subst_drive.root})
 
-    require(result.returncode == 0, result.output)
+    assert result.returncode == 0, result.output
     step = section(result.output, "Temp files")
-    assert "isn't a temp folder" in step or "refused" in step, step
+    assert (f"Your TEMP variable points at {subst_drive.root}, which isn't a temp folder, so it is left alone."
+            in step), step
+    assert "would remove about" in step                    # Windows\Temp, measured
+    assert (subst_drive.target / "not-temp.txt").exists()
 
 
 def test_move_to_a_subst_letter_on_the_same_volume_is_refused(run, profile, subst_drive):

@@ -10,15 +10,17 @@ Usage:
     python pc_tidy.py settings edit      # open settings.ini in Notepad, and check it when Notepad closes
     python pc_tidy.py settings import ..\pc-tidy-old
                                          # bring in the settings of a pc-tidy folder from before 2.0
+    python pc_tidy.py cleanup-settings   # the [cleanup] settings as JSON, for cleanup.ps1
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import time
 
-from pctidy import context, journal, lock, recovery, settings, settings_import, ui
+from pctidy import context, journal, lock, recovery, safety, settings, settings_import, ui
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
@@ -156,6 +158,24 @@ def settings_import_old(ctx, folder=None):
     return 0
 
 
+def cleanup_settings(ctx):
+    """[cleanup] for cleanup.ps1, as one line of JSON: the checked values, or ok=false and the refusal
+    (exit code 2) if [cleanup] has a mistake. ASCII only, so PowerShell reads it in any code page."""
+    cfg = settings.load(ctx, create=True)
+    messages = [n for n in cfg.notes if n]
+    messages += [f"{cfg.name} warning: {cfg.describe(p)}" for p in cfg.warnings("cleanup")]
+    problems = cfg.errors("cleanup")
+    if problems:
+        messages.append(settings.refusal(cfg, problems, ".\\cleanup.ps1"))
+        print(json.dumps({"ok": False, "messages": messages}))
+        return settings.EXIT
+    out = dict(vars(cfg.section("cleanup")))
+    # problem 14: a TEMP that points at a drive root or a folder of yours is never emptied
+    out.update(ok=True, messages=messages, temp_ok=safety.temp_problem(ctx) is None)
+    print(json.dumps(out))
+    return 0
+
+
 def _print_found(found):
     col = settings._column
     print(f"Settings found in {found.folder}:")
@@ -205,8 +225,12 @@ def main():
     actions.add_parser("edit", help="open settings.ini in Notepad, and check it when Notepad closes")
     imp = actions.add_parser("import", help="bring in the settings of a pc-tidy folder from before 2.0")
     imp.add_argument("folder", nargs="?", help="the old pc-tidy folder (default: pc-tidy-old next to this one)")
+    sub.add_parser("cleanup-settings", help="the [cleanup] settings as JSON, for cleanup.ps1 (exit code 2 if "
+                                            "[cleanup] has a mistake)")
     args = ap.parse_args()
     ctx = context.current()
+    if args.command == "cleanup-settings":
+        return cleanup_settings(ctx)
     if args.command == "recover":
         return recover(ctx)
     if args.command == "status":

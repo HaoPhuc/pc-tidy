@@ -2,7 +2,8 @@
 # They only read the script; the dry runs are tested from pytest (tests\test_cleanup_ps1.py).
 
 BeforeAll {
-    $script:CleanupPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'cleanup.ps1'
+    $script:Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $script:CleanupPath = Join-Path $Root 'cleanup.ps1'
 }
 
 Describe 'cleanup.ps1' {
@@ -24,12 +25,23 @@ Describe 'cleanup.ps1' {
         $params['DryRun'].SwitchParameter | Should -BeTrue
     }
 
-    It 'keeps every setting the README documents' {
+    It 'has no SETTINGS block left: what it cleans comes from settings.ini' {
         $text = Get-Content -LiteralPath $CleanupPath -Raw
-        foreach ($name in 'CondaCache', 'PipCache', 'UvCache', 'GpuShaderCache', 'TempFiles', 'RecycleBin',
-                          'CrashDumps', 'Hibernation', 'Installers', 'InstallerFolders', 'CondaEnvsToRemove',
-                          'AppsToUninstall', 'ExtraPathsToDelete') {
-            $text | Should -Match "(?m)^\`$$name\s*="
+        $text | Should -Not -Match '(?m)^\$\w+\s*=\s*\$(true|false)\b'
+        $text | Should -Match 'pc_tidy\.py" cleanup-settings'
+    }
+
+    It 'reads every key of the [cleanup] section in settings.template.ini' {
+        $text = Get-Content -LiteralPath $CleanupPath -Raw
+        $template = Get-Content -LiteralPath (Join-Path $Root 'settings.template.ini')
+        $start = [array]::IndexOf($template, '[cleanup]')
+        $keys = foreach ($line in $template[($start + 1)..($template.Count - 1)]) {
+            if ($line -match '^\[') { break }
+            if ($line -match '^(\w+)\s*=') { $Matches[1] }
+        }
+        $keys.Count | Should -BeGreaterThan 10
+        foreach ($key in $keys) {
+            $text | Should -Match "\`$s\.$key\b"
         }
     }
 }

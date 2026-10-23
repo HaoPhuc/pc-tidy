@@ -94,25 +94,34 @@ Options: `--path C:\` scans one drive only, `--out report.txt` writes plain text
 
 ### 5. Clean up
 
-Open `cleanup.ps1` in any text editor (Notepad works) and edit the **SETTINGS** block at the top:
+Choose what to clean in the `[cleanup]` section of `settings.ini`:
 
 ```powershell
-$CondaCache     = $true    # conda package cache
-$PipCache       = $true    # pip download cache
-$UvCache        = $true    # uv download cache
-$GpuShaderCache = $true    # NVIDIA / AMD / DirectX shader caches
-$TempFiles      = $true    # Temp folders
-$RecycleBin     = $true    # empty the Recycle Bin on every drive
-$CrashDumps     = $true    # *.dmp crash dumps
-$Hibernation    = $false   # turn off hibernation, frees C:\hiberfil.sys
-$Installers     = $true    # installers (.exe, .msi ...) in Downloads and Sorted\To-Delete
-
-$CondaEnvsToRemove  = @("old-env")
-$AppsToUninstall    = @("Docker Desktop")          # exact names from the report or Settings > Apps
-$ExtraPathsToDelete = @("D:\old-backups\*.zip")    # anything else, wildcards allowed
+python pc_tidy.py settings edit
 ```
 
-Then, in the administrator PowerShell:
+```ini
+[cleanup]
+conda_cache = yes        # conda package cache
+pip_cache = yes          # pip download cache
+uv_cache = yes           # uv download cache
+gpu_shader_cache = yes   # NVIDIA / AMD / DirectX shader caches
+temp_files = yes         # Temp folders
+recycle_bin = yes        # empty the Recycle Bin on every drive
+crash_dumps = yes        # *.dmp crash dumps
+hibernation = no         # turn off hibernation, frees C:\hiberfil.sys
+installers = yes         # installers (.exe, .msi ...) in Downloads and Sorted\To-Delete
+installers_min_age_days = 7
+
+conda_envs_to_remove =
+    old-env
+apps_to_uninstall =
+    Docker Desktop
+extra_paths_to_delete =
+    D:\old-backups\*.zip
+```
+
+Then, in the administrator PowerShell (with pc-tidy's environment active, as in step 4):
 
 ```powershell
 .\cleanup.ps1 -DryRun   # shows each step and how much it would free, changes nothing
@@ -120,8 +129,11 @@ Then, in the administrator PowerShell:
 ```
 
 Safety features:
+- A mistake in `[cleanup]` stops `cleanup.ps1` before it does anything, and names the line.
 - The dry run checks that every conda env and app name exists before you commit.
-- `ExtraPathsToDelete` refuses drive roots, Windows, Program Files, your user folder, Documents and Desktop.
+- `extra_paths_to_delete` refuses drive roots, Windows, Program Files, AppData, your user folder and its Windows folders (Documents, Desktop, Downloads ...), and a wildcard directly under any of them, such as `D:\*`.
+- If your `TEMP` variable points somewhere that isn't a temp folder (a drive root, say), your Temp folder is left alone and only `C:\Windows\Temp` is cleaned.
+- Installers changed in the last `installers_min_age_days` days are left alone, since you may not have installed them yet.
 - Files that are in use are skipped instead of forced.
 - The dry run lists every installer it would delete. Check it for portable apps, which run straight from their `.exe`, before running it for real.
 - Some uninstallers open their own window, so click through those. Restart once afterwards.
@@ -198,7 +210,7 @@ python pc_tidy.py settings show    # shows every value and where it came from
 | `[move]` | `move_off_c.py` | `min_gb`, `dest_folder_name` |
 | `[tidy]` | `tidy_folder.py` and the weekly task | `source`, `dest`, `archive_after_days`, `skip_newer_than_min`, `rename_with_ai`, `categories` (the folders the AI picks from) |
 | `[tidy.extensions]` | `tidy_folder.py` and the weekly task | `extension = folder`, for example `.pdf = Papers` |
-| `[cleanup]` | `cleanup.ps1`, from the next version | The same switches and lists as the SETTINGS block in `cleanup.ps1`. Until then, `cleanup.ps1` still uses its own block (step 5). |
+| `[cleanup]` | `cleanup.ps1` | What it cleans: the switches and lists of step 5, and `installers_min_age_days` |
 | `[label.<name>]`, `[category.<name>]`, `[apptype.<name>]` | `disk_report.py` | Your own rules, instead of editing `classify.py` (below) |
 
 How to write it:

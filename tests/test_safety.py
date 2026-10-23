@@ -181,7 +181,8 @@ def test_a_link_into_a_protected_folder_is_judged_by_where_it_leads(fake, tmp_pa
 # ---------- every path today's cleanup.ps1 removes maps to a row, and nothing else does ----------
 
 def cleanup_ps1_patterns(ctx):
-    """The Remove-Paths patterns in today's cleanup.ps1, with $env: variables from the context."""
+    """The Remove-Paths patterns in today's cleanup.ps1, with $env: variables from the context. Each
+    once: the Temp step lists Windows\\Temp twice (with and without your TEMP, problem 14)."""
     text = (ROOT / "cleanup.ps1").read_text(encoding="utf-8")
     values = {"TEMP": ctx.temp, "SystemRoot": ctx.system_root, "LOCALAPPDATA": ctx.local_appdata}
     out = []
@@ -190,7 +191,7 @@ def cleanup_ps1_patterns(ctx):
             if quoted == "$p":
                 continue      # ExtraPathsToDelete: the user's own, checked one by one
             out.append(re.sub(r"\$env:(\w+)", lambda m: values[m.group(1)], quoted))
-    return out
+    return list(dict.fromkeys(out))
 
 
 def table_patterns(ctx):

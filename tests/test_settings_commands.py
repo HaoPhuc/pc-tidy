@@ -74,8 +74,8 @@ def test_tidy_sorts_the_folders_named_in_settings_ini_unless_given(run, profile,
 
 # ---------- an error stops only what it affects ----------
 def test_a_typo_in_cleanup_stops_nothing_that_does_not_read_it(run, profile, tmp_path):
-    """M3's isolation test. .\\cleanup.ps1 still reads its own SETTINGS block until M4, so the part
-    where it exits 2 naming the line is checked through settings check instead."""
+    """M3's isolation test. The part where .\\cleanup.ps1 exits 2 naming the line is in
+    test_cleanup_ps1.py (it needs admin), and through pc_tidy.py cleanup-settings here."""
     text, line = template_with("pip_cache = yes", "pip_cahce = no")
     write(tmp_path / "settings.ini", text)
     downloads, sorted_dir = profile / "Downloads", tmp_path / "Sorted"
@@ -89,7 +89,10 @@ def test_a_typo_in_cleanup_stops_nothing_that_does_not_read_it(run, profile, tmp
     assert check.returncode == settings.EXIT
     assert f"settings.ini line {line} in [cleanup]: unknown key 'pip_cahce'. Did you mean 'pip_cache'?" \
         in check.stdout, check.output
-    assert "Nothing reads [cleanup] yet" in check.stdout
+    assert ".\\cleanup.ps1 won't run until it's fixed." in check.stdout
+    cleanup = run.python("pc_tidy.py", "cleanup-settings")
+    assert cleanup.returncode == settings.EXIT, cleanup.output
+    assert f"line {line} in [cleanup]: unknown key 'pip_cahce'" in cleanup.stdout
     assert tidy.returncode == 0, tidy.output
     assert f"Moved {len(EXPECTED)} items" in tidy.stdout
     assert move.returncode == 0, move.output
