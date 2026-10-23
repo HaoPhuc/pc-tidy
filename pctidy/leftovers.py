@@ -28,11 +28,11 @@ through _win.open_untouched, so checking duplicates never changes when a file wa
 
 import hashlib
 import os
-import sys
 import time
 from collections import defaultdict
 
 from . import _win, context
+from .progress import Line
 from .paths import inside, lp, norm
 
 MB, GB = 1024 ** 2, 1024 ** 3
@@ -254,10 +254,11 @@ def analyse(ctx, cfg, progress=True):
     sorted_dir = cfg.value("tidy", "dest")
     accidental = [os.path.join(ctx.profile, "Downloads"), os.path.join(ctx.profile, "Desktop"), sorted_dir]
 
-    def say(what):
-        if progress:
-            sys.stderr.write(f"\r  {what[:60]} ...{' ' * 20}")
-            sys.stderr.flush()
+    line = Line() if progress else None
+
+    def say(what, force=True):
+        if line:
+            line.show(f"{what} ...", force=force)
 
     files, dirs = [], []
     for root in roots:
@@ -316,7 +317,7 @@ def analyse(ctx, cfg, progress=True):
     budget, unchecked, groups = [o.hash_budget_gb * GB], 0, []
     sizes = sorted((s for s, g in by_size.items() if len(g) > 1), reverse=True)     # biggest first
     for i, size in enumerate(sizes):
-        say(f"checking duplicates ({i + 1} of {len(sizes)})")
+        say(f"checking duplicates: {i + 1} of {len(sizes)} sizes", force=False)
         group = _distinct(by_size[size])
         if len(group) < 2:
             continue
@@ -325,8 +326,8 @@ def analyse(ctx, cfg, progress=True):
             unchecked = len(sizes) - i
             break
         groups += same
-    if progress:
-        sys.stderr.write("\r" + " " * 90 + "\r")
+    if line:
+        line.clear()
 
     # A loose file: right in Downloads or Desktop, or in a folder of Sorted that tidy_folder.py files
     # things into (Sorted\Pictures, Sorted\Archive\Pictures). A copy deeper down is part of something,

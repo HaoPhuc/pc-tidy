@@ -30,6 +30,7 @@ import time
 from . import _win, context, executor, journal, leftovers, lock, recovery, safety, settings, ui, volume
 from .fixes import gb
 from .plan import Plan, fingerprint
+from .progress import Line
 
 COMMAND = "pc-tidy"
 FULL_C = 256 * 1024 ** 2         # under this much free, C: counts as full
@@ -451,7 +452,7 @@ def confirm(ctx, listing):
 # ---------- 7-8. run and summary ----------
 class _Progress:
     def __init__(self, dry):
-        self.dry, self.current, self.count, self.last = dry, None, 0, 0.0
+        self.dry, self.current, self.count, self.line = dry, None, 0, Line()
         self.titles = {r["id"]: (r["n"], r["title"]) for r in dry.rows}
 
     def start(self, a):
@@ -461,12 +462,9 @@ class _Progress:
             n, title = self.titles.get(fix, ("", fix))
             print(f"  {n}  {title} ...")
         self.count += 1
-        now = time.monotonic()
-        if now - self.last > 1 and sys.stderr.isatty():
-            self.last = now
-            total = len(self.dry.by_fix.get(fix, []))
-            sys.stderr.write(f"\r      {self.count:,} of {total:,}   ")
-            sys.stderr.flush()
+        total = len(self.dry.by_fix.get(fix, []))
+        if total > 1:
+            self.line.show(f"    {self.count:,} of {total:,}")
 
 
 def execute(ctx, dry):
@@ -499,8 +497,7 @@ def execute(ctx, dry):
     except executor.PlanRefused as e:
         print(e)
         return 1
-    if sys.stderr.isatty():
-        sys.stderr.write("\r" + " " * 40 + "\r")
+    progress.line.clear()
     after = volume.free_bytes(ctx.system_drive)
     return summary(dry, outcomes, before, after, drive, [r for r in records if r])
 

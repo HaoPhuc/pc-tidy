@@ -245,6 +245,12 @@ class _Rules:
     def temp_problem(self):
         if not hasattr(self, "_temp"):
             t = norm(real(self.ctx.temp))
+            if inside(real(self.ctx.app_dir), t, strict=True):
+                # e.g. a ZIP opened in Explorer, which runs it from Temp: cleaning Temp would delete pc-tidy
+                self._temp = (f"pc-tidy's own folder ({self.ctx.app_dir}) is inside your Temp folder, so the Temp fix "
+                              "was skipped: cleaning Temp would delete pc-tidy. Move the pc-tidy folder out of Temp, "
+                              "for example to C:\\pc-tidy.")
+                return self._temp
             name, parent_name = os.path.basename(t), os.path.basename(os.path.dirname(t))
             named_temp = name in ("temp", "tmp") or (name.isdigit() and parent_name in ("temp", "tmp"))
             bad = (not named_temp or is_root(t) or t in self.top or t in self.closed

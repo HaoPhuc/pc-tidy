@@ -30,6 +30,7 @@ from .lock import Lock
 from .paths import inside, lp
 from .plan import (PLAN_VALID_HOURS, computer_name, fingerprint, is_dir_stat, is_link, settings_hash,
                    tree_stats, unchanged)
+from .progress import Line, duration
 
 PARTIAL = ".pctidy-partial"
 MAX_IO_ERRORS_IN_A_ROW = 20
@@ -366,9 +367,20 @@ class _Runner:
             raise Skip("it contains a link (a junction or symlink), which pc-tidy doesn't move to another drive")
         if os.path.lexists(lp(partial)):
             raise Skip(f"a partial copy from an earlier run is in the way: {partial}")
+        line, total, done, started = Line(), a.get("bytes", 0), [0], time.monotonic()
+        name = os.path.basename(src)
+
+        def copied(n):
+            done[0] += n
+            rate = done[0] / max(time.monotonic() - started, 0.001)
+            left = f", about {duration((total - done[0]) / rate)} left" if total > done[0] and rate else ""
+            line.show(f"copying {name}: {done[0] / volume.GB:.1f} of {total / volume.GB:.1f} GB, "
+                      f"{rate / 1024 ** 2:.0f} MB/s{left}")
         try:
-            digests = _copy_item(src, partial)
+            digests = _copy_item(src, partial, copied)
+            line.show(f"checking the copy of {name} ...", force=True)
             bad = _verify(partial, digests)
+            line.clear()
             if bad is not None:
                 raise Skip(f"the copy didn't match the original ({bad}), so nothing was moved. "
                            "The destination drive may be failing.")
@@ -377,6 +389,7 @@ class _Runner:
             _remove_own_copy(partial)
             raise Skip("the target already exists")
         except BaseException:
+            line.clear()
             _remove_own_copy(partial)
             raise
         copied = fingerprint(dst)
@@ -485,8 +498,9 @@ def _write(f, chunk):
     f.write(chunk)
 
 
-def _copy_file(src, dst):
-    """Copy one file to a new file (never replacing one) and return its BLAKE2b digest."""
+def _copy_file(src, dst, copied=None):
+    """Copy one file to a new file (never replacing one) and return its BLAKE2b digest. copied(n)
+    is told about every chunk, for the progress line."""
     h = hashlib.blake2b()
     with open(lp(src), "rb") as fin, open(lp(dst), "xb") as fout:
         while True:
@@ -495,6 +509,8 @@ def _copy_file(src, dst):
                 break
             h.update(chunk)
             _write(fout, chunk)
+            if copied:
+                copied(len(chunk))
         fout.flush()
         os.fsync(fout.fileno())
     st = os.stat(lp(src))
@@ -504,11 +520,11 @@ def _copy_file(src, dst):
     return h.hexdigest()
 
 
-def _copy_item(src, dst):
+def _copy_item(src, dst, copied=None):
     """Copy a file or a folder tree to dst. Returns {relative path: digest}."""
     st = os.lstat(lp(src))
     if not is_dir_stat(st):
-        return {"": _copy_file(src, dst)}
+        return {"": _copy_file(src, dst, copied)}
     digests, dirs = {}, []
     os.mkdir(lp(dst))
     stack = [""]
@@ -525,7 +541,7 @@ def _copy_item(src, dst):
                 os.mkdir(lp(os.path.join(dst, sub)))
                 stack.append(sub)
             else:
-                digests[sub] = _copy_file(os.path.join(src, sub), os.path.join(dst, sub))
+                digests[sub] = _copy_file(os.path.join(src, sub), os.path.join(dst, sub), copied)
     for rel in reversed(dirs):       # folder times last, after their contents were written
         here = os.path.join(src, rel) if rel else src
         st = os.stat(lp(here))

@@ -45,3 +45,28 @@ Describe 'cleanup.ps1' {
         }
     }
 }
+
+Describe 'setup.ps1' {
+    BeforeAll {
+        $script:SetupPath = Join-Path $Root 'setup.ps1'
+    }
+
+    It 'parses without errors' {
+        $tokens = $null
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($SetupPath, [ref]$tokens, [ref]$errors)
+        $errors | Should -BeNullOrEmpty
+    }
+
+    It 'has a -NonInteractive switch for CI' {
+        (Get-Command $SetupPath).Parameters['NonInteractive'].SwitchParameter | Should -BeTrue
+    }
+}
+
+Describe 'cleanup.ps1 --help' {
+    It 'prints its help and exits 0' {
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $CleanupPath --help
+        $LASTEXITCODE | Should -Be 0
+        ($out -join "`n") | Should -Match 'cleanup\.ps1 -DryRun'
+    }
+}

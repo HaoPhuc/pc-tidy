@@ -111,6 +111,31 @@ def _wrap(module, name, op, nargs=1, kind=_Guarded):
     setattr(module, name, kind(real, op, nargs))
 
 
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
+
+
+def install_network():
+    """A network tripwire: a socket may only connect to (or listen on) this PC itself. pc-tidy only
+    ever talks to Ollama on localhost, so anything else is a violation, recorded like a write."""
+    import socket
+
+    def checked(real, op):
+        def wrapper(self, address, *args, **kwargs):
+            host = address[0] if isinstance(address, tuple) else address
+            if not (isinstance(host, str) and (host in LOOPBACK or host.startswith("127."))):
+                message = f"pc-tidy test guard: refused to {op} {address}, which isn't this PC"
+                violations.append(message)
+                if _log_path:
+                    with _real_open(_log_path, "a", encoding="utf-8") as f:
+                        f.write(message + "\n")
+                raise PermissionError(message)
+            return real(self, address, *args, **kwargs)
+        return wrapper
+
+    for name, op in (("connect", "connect to"), ("connect_ex", "connect to"), ("bind", "listen on")):
+        setattr(socket.socket, name, checked(getattr(socket.socket, name), op))
+
+
 def install():
     """Wrap the file-changing functions. Safe to call more than once."""
     if _real:

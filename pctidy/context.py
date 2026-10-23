@@ -96,6 +96,37 @@ class Context:
             self._known = out
         return self._known
 
+    def onedrive_folders(self):
+        """The folders OneDrive syncs: from its environment variables, and (outside the test sandbox)
+        from its accounts in the registry."""
+        found = [_abs(self.env[k]) for k in ("ONEDRIVE", "ONEDRIVECONSUMER", "ONEDRIVECOMMERCIAL") if self.env.get(k)]
+        if not self.sandbox and os.name == "nt":
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\OneDrive\Accounts") as accounts:
+                    for i in range(winreg.QueryInfoKey(accounts)[0]):
+                        try:
+                            with winreg.OpenKey(accounts, winreg.EnumKey(accounts, i)) as account:
+                                found.append(_abs(winreg.QueryValueEx(account, "UserFolder")[0]))
+                        except OSError:
+                            continue
+            except OSError:
+                pass
+        out, seen = [], set()
+        for path in found:
+            if path and norm(path) not in seen:
+                seen.add(norm(path))
+                out.append(path)
+        return out
+
+    def synced_by_onedrive(self, path):
+        """The OneDrive folder `path` is in (links resolved: Documents may be redirected into one), or None."""
+        from .paths import real
+        for folder in self.onedrive_folders():
+            if inside(real(path), real(folder)) or inside(path, folder):
+                return folder
+        return None
+
     # ---------- the test sandbox ----------
     def in_sandbox(self, path):
         return any(inside(path, root) for root in self.sandbox)
