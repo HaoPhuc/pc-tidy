@@ -225,19 +225,28 @@ def file_hash(path):
     return h.hexdigest().upper()
 
 
-def cleanup_script(exe, sha256, folders, pids, quiet=True):
+def cleanup_script(exe, sha256, folders, pids, quiet=True, log=None):
     """The PowerShell that removes pc-tidy.exe once the processes `pids` have ended: only that one file,
-    and only while its SHA-256 is still `sha256`; then each of `folders` if it is empty."""
+    and only while its SHA-256 is still `sha256`; then each of `folders` if it is empty. `log` (the
+    tests' only) gets a line per step."""
     def q(text):
         return "'" + str(text).replace("'", "''") + "'"
     return "\n".join([
         "$ErrorActionPreference = " + ("'SilentlyContinue'" if quiet else "'Continue'"),
-        f"foreach ($id in @({', '.join(str(p) for p in pids)})) {{ Wait-Process -Id $id -Timeout 120 }}",
+        f"$log = {q(log or '')}",
+        "function Note([string]$text) { if ($log) { Add-Content -LiteralPath $log -Value ((Get-Date -Format 'HH:mm:ss.fff') + ' ' + $text) } }",
+        "Note 'started'",
+        f"foreach ($id in @({', '.join(str(p) for p in pids)})) {{ Wait-Process -Id $id -Timeout 120; Note \"waited for $id\" }}",
         "Start-Sleep -Milliseconds 500",
         f"$exe = {q(exe)}",
-        f"if ((Test-Path -LiteralPath $exe) -and (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -eq {q(sha256)}) {{",
-        "    for ($i = 0; $i -lt 10 -and (Test-Path -LiteralPath $exe); $i++) {",
-        "        Remove-Item -LiteralPath $exe -Force; Start-Sleep -Milliseconds 500 } }",
+        "$hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash",
+        "Note \"hash $hash\"",
+        f"if ((Test-Path -LiteralPath $exe) -and $hash -eq {q(sha256)}) {{",
+        # a virus scanner may hold a new exe for a while: keep trying for a minute
+        "    for ($i = 0; $i -lt 60 -and (Test-Path -LiteralPath $exe); $i++) {",
+        "        try { Remove-Item -LiteralPath $exe -Force -ErrorAction Stop }",
+        "        catch { Note ('not yet: ' + $_.Exception.Message); Start-Sleep -Seconds 1 } } }",
+        "Note ('exe still there: ' + (Test-Path -LiteralPath $exe))",
         # never recursive: a folder goes only if it is empty
         f"foreach ($d in @({', '.join(q(f) for f in folders)})) {{ try {{ [System.IO.Directory]::Delete($d, $false) }} catch {{}} }}",
         "exit 0",
@@ -255,7 +264,8 @@ def remove_exe_after_exit(ctx, wait_for=None):
         safety.check(folder, "self", ctx)
     # pc-tidy.exe runs as two processes: its loader, which empties the unpack folder last, and Python
     pids = [os.getpid(), os.getppid()] if context.FROZEN else [os.getpid()]
-    script = cleanup_script(exe, file_hash(exe), folders, pids if wait_for is None else wait_for)
+    script = cleanup_script(exe, file_hash(exe), folders, pids if wait_for is None else wait_for,
+                            log=ctx.test_value("PCTIDY_TEST_CLEANUP_LOG"))
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     shell = shutil.which("powershell") or os.path.join(os.environ.get("SystemRoot", "C:\\Windows"),
                                                        "System32", "WindowsPowerShell", "v1.0", "powershell.exe")

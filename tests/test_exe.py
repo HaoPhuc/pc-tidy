@@ -22,14 +22,14 @@ pytestmark = pytest.mark.skipif(not EXE, reason="PCTIDY_EXE isn't set: build pc-
 MB = 1024 ** 2
 
 
-def run_exe(run, *args, input=None, exe=None):
+def run_exe(run, *args, input=None, exe=None, env=None):
     """Run a copy of pc-tidy.exe (by default one in the test's folder: at its end pc-tidy.exe offers to
     remove itself, and the build must survive the tests)."""
     if exe is None:
         exe = str(run.work / "pc-tidy.exe")
         if not os.path.exists(exe):
             shutil.copy2(EXE, exe)
-    env = run.command_env()
+    env = run.command_env(env)
     # highestAvailable would ask for a UAC prompt in a normal window of an administrator account;
     # RunAsInvoker starts it as this window is (CI's window is elevated anyway)
     env["__COMPAT_LAYER"] = "RunAsInvoker"
@@ -104,11 +104,15 @@ def test_at_the_end_it_removes_itself_and_its_files_and_nothing_else(run, profil
     write(temp / "cache.tmp", b"c" * MB, age_days=10)
     yours = write(data / "my notes.txt", "mine")
 
-    result = run_exe(run, input="yes\n\n\n\n", exe=str(own))     # sweep, no more, remove, close the window
+    log = run.work / "cleanup.log"
+    result = run_exe(run, input="yes\n\n\n\n", exe=str(own),       # sweep, no more, remove, close the window
+                     env={"PCTIDY_TEST_CLEANUP_LOG": str(log)})
 
     assert result.returncode == 0, result.output
     assert "pc-tidy.exe is removed when this window closes." in result.stdout
-    assert wait_gone(own), "pc-tidy.exe was still there a minute after it ended"
+    gone = wait_gone(own, 120)
+    assert gone, ("pc-tidy.exe was still there two minutes after it ended. What its cleanup did:\n"
+                  + (log.read_text(encoding="utf-8") if log.exists() else "(no log: it never started)"))
     assert not (data / "runs").exists()                             # the record of the sweep, which only deleted
     assert yours.exists() and data.is_dir()                         # yours stays, and so does that folder
     assert (profile / "Downloads" / "setup.exe").exists()
