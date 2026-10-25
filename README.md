@@ -6,7 +6,7 @@ Find out what is filling up your Windows PC, clean it up safely, move big files 
 |---|---|---|
 | `pc-tidy.cmd` (or `python pc_tidy.py`) | **The easy way.** Double-click it: it scans C:, shows the fixes for C: lowest risk first, and does the ones you pick. Then a menu to sort Downloads, undo, or change settings. | Only what you pick, after the exact list and your yes |
 | `disk_report.py` | Scans every drive and saves a PDF report: where the space goes by category, what you can clean up, what could move off C:, installed apps by type, and the biggest folders and files. | No, read-only |
-| `cleanup.ps1` | Cleans what you switch on in its settings: caches, temp files, crash dumps, old installers, conda envs, apps, and any paths you add. | Yes, after a dry run and your confirmation |
+| `cleanup.ps1` | Cleans what you switch on in its settings: caches, temp files, crash dumps, old installers, conda envs, apps, and any paths you add. | Yes, after the exact list and your yes |
 | `move_off_c.py` | Moves big personal folders and files from C: to another drive. It copies, checks the copy, then deletes. | Moves only, and can undo |
 | `tidy_folder.py` | Sorts a folder (Downloads by default) into subfolders by type. The local AI reads unclear PDFs and Word docs, and can sort whole subfolders. | Moves only, never deletes, and can undo |
 
@@ -135,7 +135,7 @@ pip_cache = yes          # pip download cache
 uv_cache = yes           # uv download cache
 gpu_shader_cache = yes   # NVIDIA / AMD / DirectX shader caches
 temp_files = yes         # Temp folders
-recycle_bin = yes        # empty the Recycle Bin on every drive
+recycle_bin = no         # empty the Recycle Bin on every drive (asks a second time)
 crash_dumps = yes        # *.dmp crash dumps
 hibernation = no         # turn off hibernation, frees C:\hiberfil.sys
 installers = yes         # installers (.exe, .msi ...) in Downloads and Sorted\To-Delete
@@ -152,21 +152,25 @@ extra_paths_to_delete =
 Then, in the administrator PowerShell (with pc-tidy's environment active, as in step 4):
 
 ```powershell
-.\cleanup.ps1 -DryRun   # shows each step and how much it would free, changes nothing
-.\cleanup.ps1           # does it, after you type yes
+.\cleanup.ps1 -DryRun   # shows the exact list of what would go, changes nothing
+.\cleanup.ps1           # shows the same list, then does it after you type yes
 ```
 
 Safety features:
+- It always shows the exact list first: every file and folder it would remove, with the full list in a file (`O` opens it). Nothing changes until you type `yes`, and then it removes only what was on that list. A file that changed or appeared since is left alone.
+- The Recycle Bin and each line of `extra_paths_to_delete` can't be undone, so they ask a second time. The Recycle Bin is off unless you switch it on.
 - A mistake in `[cleanup]` stops `cleanup.ps1` before it does anything, and names the line.
-- The dry run checks that every conda env and app name exists before you commit.
+- conda env names are checked against `conda env list`, and app names against your installed apps, before the list is shown.
 - `extra_paths_to_delete` refuses drive roots, Windows, Program Files, AppData, your user folder and its Windows folders (Documents, Desktop, Downloads ...), and a wildcard directly under any of them, such as `D:\*`.
+- In `extra_paths_to_delete` only `*` and `?` are wildcards. `[` and `]` are part of a name: `D:\Photos [2019]` is that one folder.
+- A link (a junction or symlink) inside a folder it deletes is removed itself. What it points at is never touched.
 - If your `TEMP` variable points somewhere that isn't a temp folder (a drive root, say), your Temp folder is left alone and only `C:\Windows\Temp` is cleaned.
 - Installers changed in the last `installers_min_age_days` days are left alone, since you may not have installed them yet.
 - Files that are in use are skipped instead of forced.
-- The dry run lists every installer it would delete. Check it for portable apps, which run straight from their `.exe`, before running it for real.
-- Some uninstallers open their own window, so click through those. Restart once afterwards.
+- The list shows every installer it would delete. Check it for portable apps, which run straight from their `.exe`, before you type yes.
+- App uninstalls run last. Some uninstallers open their own window, so click through those. Restart once afterwards.
 
-At the end it shows the free space on every drive, before and after.
+At the end it shows what each step freed, what was skipped and why, and the free space on C: before and after. Everything it did is recorded in `%LOCALAPPDATA%\pc-tidy\runs`.
 
 ### 6. Move big files off C:
 
@@ -318,7 +322,7 @@ It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of
 - **Rules first, AI second.** Plain rules in `classify.py` (plus your own in `settings.ini`) handle everything predictable. The AI is used only where rules can't decide: reading a PDF to sort it, sorting a whole folder, naming the type of an unfamiliar app, or describing an unfamiliar folder.
 - **The AI never decides what gets deleted.** Its descriptions are labeled as guesses, and `cleanup.ps1` only does what you switch on.
 - **Small and local.** `llama3.2:3b` runs on most laptops without a GPU and nothing is sent online.
-- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and the `pctidy` package holds the rest: `settings.py` (settings.ini), `fixes.py` (the ranked fixes), `leftovers.py` (what's left), `guided.py` (the guided flow), and the safety core (`safety.py`, `plan.py`, `executor.py`, `journal.py`, `lock.py`, `undo.py`). The plan for 2.0 is in [docs/PLAN.md](docs/PLAN.md), and the checks to do by hand before a release are in [docs/CHECKLIST.md](docs/CHECKLIST.md).
+- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and the `pctidy` package holds the rest: `settings.py` (settings.ini), `fixes.py` (the ranked fixes), `leftovers.py` (what's left), `guided.py` (the guided flow), `cleanup.py` (what `cleanup.ps1` runs), and the safety core (`safety.py`, `plan.py`, `executor.py`, `journal.py`, `lock.py`, `undo.py`). The plan for 2.0 is in [docs/PLAN.md](docs/PLAN.md), the plan for 3.0 in [docs/PLAN-3.md](docs/PLAN-3.md), and the checks to do by hand before a release are in [docs/CHECKLIST.md](docs/CHECKLIST.md).
 
 ## License
 

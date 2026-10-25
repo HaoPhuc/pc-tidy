@@ -12,6 +12,7 @@ CI runs every test on windows-latest, which is a Windows Server image. It runs a
 ## Windows rights
 - [ ] An administrator account, normal window: the Windows rows say "needs an administrator window". *Run as administrator* on `pc-tidy.cmd` measures and cleans them.
 - [ ] A standard account: the same rows say so, and nothing asks for a password unexpectedly.
+- [ ] `.\cleanup.ps1` in an administrator PowerShell, with `recycle_bin = yes` and a test folder in `extra_paths_to_delete`: the exact list comes first, each of those two asks a second time, Enter at the second question leaves it out, and the summary shows C: before and after.
 
 ## OneDrive
 - [ ] With OneDrive folder backup on (Desktop and Documents synced), no report, plan, record or log of pc-tidy is in a OneDrive folder.
