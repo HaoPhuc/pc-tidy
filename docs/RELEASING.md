@@ -19,8 +19,8 @@ On `main`, after the pull request is merged:
 
 ```powershell
 git pull
-git tag v3.0.0
-git push origin v3.0.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 Then:
