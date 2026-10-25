@@ -2,6 +2,14 @@
 
 CI runs every test on windows-latest, which is a Windows Server image. It runs as administrator, and has no UAC prompt, no OneDrive and no USB disks. These checks need a real PC, so do them by hand on **Windows 10 22H2** and **Windows 11** before a release. Tick each one, and write down what differed.
 
+## The release itself
+Do these with the file from the release page, on a PC that has never had Python or pc-tidy.
+- [ ] `Get-FileHash .\pc-tidy.exe` matches the SHA-256 in the release notes, and `gh attestation verify pc-tidy.exe -R HaoPhuc/pc-tidy` succeeds.
+- [ ] *Properties > Details* shows pc-tidy, the release's version and Phuc Huynh. For a signed release, *Digital Signatures* shows the validated name, and Windows calls the signature OK.
+- [ ] Microsoft Defender: right-click > *Scan with Microsoft Defender* finds nothing. Note any other antivirus that complains, with its name.
+- [ ] SmartScreen on the first double-click of the fresh download: write down what it shows. A signed release should name its publisher; an unsigned one shows "Windows protected your PC".
+- [ ] Download it again a week later, double-click, and run the quick sweep: it works the same, and the pc-tidy.exe left in Downloads isn't offered as an old installer.
+
 ## pc-tidy.exe
 - [ ] Download `pc-tidy.exe` from a CI run or a release and double-click it. On an administrator account Windows asks once; the window then cleans the Windows rows too. On a standard account nothing asks for a password, and the Windows rows say why they are left out.
 - [ ] It starts with the quick sweep within a few seconds, listing only temp files older than 7 days, caches and crash dumps. `yes` frees them; `M` then scans and shows the ranked list.

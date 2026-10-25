@@ -45,10 +45,11 @@ jobs:
           Invoke-Pester tests\ps -CI
 
   exe:
-    name: pc-tidy.exe (build, test, release on a v* tag)
+    name: pc-tidy.exe (build and test)
     runs-on: windows-latest
-    permissions:
-      contents: write        # only used to publish a release from a v* tag
+    env:
+      # the version in the exe's Properties: the tag for a release, else 0.0.0 and the commit
+      PCTIDY_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-dev+{0}', github.sha) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,9 +62,6 @@ jobs:
           python -m venv build-venv
           build-venv\Scripts\python.exe -m pip install --disable-pip-version-check -r packaging\requirements-build.txt
           build-venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\pc-tidy.spec
-          $hash = (Get-FileHash dist\pc-tidy.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  pc-tidy.exe" | Out-File -Encoding ascii dist\pc-tidy.exe.sha256
-          Get-Content dist\pc-tidy.exe.sha256
       - name: Test the exe
         env:
           PCTIDY_EXE: dist\pc-tidy.exe
@@ -73,14 +71,86 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pc-tidy-exe
-          path: |
-            dist/pc-tidy.exe
-            dist/pc-tidy.exe.sha256
+          path: dist/pc-tidy.exe
+
+  release:
+    # A v* tag, once every other job passed: the exe that job built is signed (once
+    # docs/RELEASING.md's setup is done), tested again, attested and published. The "release"
+    # environment is what Azure trusts for signing, and can be limited to v* tags.
+    name: Release pc-tidy.exe (v* tags)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [pytest, pester, exe, setup]
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write        # publishing the release
+      id-token: write        # signing in to Azure with OpenID Connect, and the attestation
+      attestations: write    # the build provenance attestation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pc-tidy-exe
+          path: dist
+      - name: Sign in to Azure (once signing is set up)
+        if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign pc-tidy.exe (once signing is set up)
+        if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\pc-tidy.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Say that this release isn't signed
+        if: vars.ARTIFACT_SIGNING_ACCOUNT == ''
+        run: echo "::warning::This release of pc-tidy.exe isn't signed, so SmartScreen warns about it. Set up signing as docs/RELEASING.md says."
+      - name: Hash
+        # after signing: the hash is of the file people download
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash dist\pc-tidy.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  pc-tidy.exe" | Out-File -Encoding ascii dist\pc-tidy.exe.sha256
+          Get-Content dist\pc-tidy.exe.sha256
+      - name: Test the file that is published
+        env:
+          PCTIDY_EXE: dist\pc-tidy.exe
+          PCTIDY_VERSION: ${{ github.ref_name }}
+          PCTIDY_EXPECT_SIGNED: ${{ vars.ARTIFACT_SIGNING_ACCOUNT != '' && '1' || '' }}
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q tests/test_exe.py
+      - name: Attest where it was built
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/pc-tidy.exe
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/pc-tidy.exe dist/pc-tidy.exe.sha256 --title "pc-tidy ${{ github.ref_name }}" --generate-notes
+          SIGNED: ${{ vars.ARTIFACT_SIGNING_ACCOUNT != '' && 'yes' || 'no, so Windows SmartScreen warns before it runs' }}
+        shell: powershell
+        run: |
+          $hash = (Get-Content dist\pc-tidy.exe.sha256).Split(' ')[0]
+          [System.IO.File]::WriteAllLines("$PWD\notes.md", [string[]]@(
+            "Download **pc-tidy.exe** and double-click it. Nothing to install; at the end it offers to remove itself.",
+            "",
+            "- SHA-256: ``$hash``",
+            "- Signed: $env:SIGNED",
+            "- Built by this repository's CI from ${{ github.ref_name }}. To check that, with the GitHub CLI:",
+            "  ``gh attestation verify pc-tidy.exe -R ${{ github.repository }}``",
+            ""))
+          gh release create "${{ github.ref_name }}" dist/pc-tidy.exe dist/pc-tidy.exe.sha256 --title "pc-tidy ${{ github.ref_name }}" --notes-file notes.md --generate-notes
 
   setup:
     name: setup.cmd on a clean runner (twice)
