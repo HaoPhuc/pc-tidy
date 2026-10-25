@@ -27,9 +27,10 @@ def guided_run(run, answers, **kwargs):
 
 
 def temp_files(profile, mb=3):
-    """Your Temp folder with mb of files: the only fix the fake profile then has."""
+    """Your Temp folder with mb of files, old enough for the Temp fix: the only fix the fake profile
+    then has."""
     temp = profile / "AppData" / "Local" / "Temp"
-    return [blob(temp / f"cache{i}.tmp", mb / 3) for i in range(3)]
+    return [blob(temp / f"cache{i}.tmp", mb / 3, age_days=10) for i in range(3)]
 
 
 def test_no_answer_changes_nothing(run, profile):
@@ -58,8 +59,8 @@ def test_yes_deletes_exactly_the_list(run, profile):
     result = guided_run(run, "1\nyes\n\n")
 
     assert result.returncode == 0, result.output
-    assert "1  Your Temp files: delete 5 items, 3 MB" in result.stdout     # 3 files, tmp1.tmp, the junction
-    assert "Your Temp files: freed 3 MB (the report said 3 MB)" in result.stdout
+    assert "1  Your Temp files older than 7 days: delete 5 items, 3 MB" in result.stdout     # 3 files, tmp1.tmp, the junction
+    assert "Your Temp files older than 7 days: freed 3 MB (the report said 3 MB)" in result.stdout
     assert not any(f.exists() for f in files)
     assert precious.read_bytes() == b"k" * 1000          # the link went, never what it points at
     assert "What was done is recorded in" in result.stdout
@@ -82,7 +83,7 @@ def test_L_picks_every_low_risk_fix(run, profile):
     blob(profile / "AppData" / "Local" / "pip" / "cache" / "w.whl", 2)
     result = guided_run(run, "L\nno\n\n")
     dry = result.stdout[result.stdout.index("DRY RUN"):]
-    assert "Your Temp files: delete" in dry and "pip and uv caches: delete 1 item, 2 MB" in dry
+    assert "Your Temp files older than 7 days: delete" in dry and "pip and uv caches: delete 1 item, 2 MB" in dry
 
 
 def test_a_fix_done_by_hand_says_how(run, profile):
@@ -100,8 +101,7 @@ def test_a_fix_done_by_hand_says_how(run, profile):
 def test_node_modules_is_deleted_whole(run, profile, tmp_path):
     project = profile / "Documents" / "robot"
     blob(project / "node_modules" / "pkg" / "index.js", 2)
-    write(project / "package.json", "{}")
-    write(tmp_path / "settings.ini", "[report]\ncleanup_min_gb = 0.001\n")
+    write(project / "package.json", "{}", age_days=40)          # a project nobody touched for a month
 
     result = guided_run(run, "1\nyes\n\n")
 

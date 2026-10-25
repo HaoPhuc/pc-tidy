@@ -315,6 +315,9 @@ class _Runner:
             if a.get("keep") and not unchanged(fingerprint(a["keep"]), a.get("keep_fp")):
                 # an extra copy of a duplicate goes only while the copy that stays is still there, as it was
                 raise Skip("the copy that would stay changed or went since the dry run, so this one stays too")
+            if a.get("keep") and not _same_bytes(a["path"], a["keep"]):
+                # its size and times can stay the same while its content changes (problem 22)
+                raise Skip("the copy that would stay isn't identical to this one any more, so this one stays too")
         elif op == "rmdir":
             if not os.path.isdir(lp(a["path"])):
                 raise Skip("it's already gone")
@@ -367,6 +370,9 @@ class _Runner:
             raise Skip("it contains a link (a junction or symlink), which pc-tidy doesn't move to another drive")
         if os.path.lexists(lp(partial)):
             raise Skip(f"a partial copy from an earlier run is in the way: {partial}")
+        busy = _first_open_elsewhere(src)
+        if busy is not None:     # found now, not after copying gigabytes or with the original half-deleted
+            raise Skip(f"{busy} is open in another program, so nothing was copied. Close it, then move it again")
         line, total, done, started = Line(), a.get("bytes", 0), [0], time.monotonic()
         name = os.path.basename(src)
 
@@ -557,6 +563,41 @@ def _digest(path):
             if not chunk:
                 return h.hexdigest()
             h.update(chunk)
+
+
+def _first_open_elsewhere(src):
+    """The first file of a file or folder tree that another program has open (its name, relative to
+    the folder), or None. Links are not followed."""
+    if not is_dir_stat(os.lstat(lp(src))):
+        return os.path.basename(src) if _win.open_elsewhere(src) else None
+    stack = [""]
+    while stack:
+        rel = stack.pop()
+        for e in os.scandir(lp(os.path.join(src, rel) if rel else src)):
+            sub = os.path.join(rel, e.name) if rel else e.name
+            est = e.stat(follow_symlinks=False)
+            if is_link(est):
+                continue
+            if is_dir_stat(est):
+                stack.append(sub)
+            elif _win.open_elsewhere(os.path.join(src, sub)):
+                return sub
+    return None
+
+
+def _same_bytes(a, b):
+    """True if two files hold exactly the same bytes, read now without changing when either was last
+    opened. False if either can't be read that way: then the extra copy stays."""
+    try:
+        with _win.open_untouched(a) as fa, _win.open_untouched(b) as fb:
+            while True:
+                x, y = fa.read(CHUNK), fb.read(CHUNK)
+                if x != y:
+                    return False
+                if not x:
+                    return True
+    except OSError:
+        return False
 
 
 def _verify(copy, digests):

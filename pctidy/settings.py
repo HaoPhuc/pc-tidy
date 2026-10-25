@@ -98,6 +98,7 @@ SECTIONS = {
         Key("uv_cache", "yesno", True),
         Key("gpu_shader_cache", "yesno", True),
         Key("temp_files", "yesno", True),
+        Key("temp_min_age_days", "int", 7, 0, 36500),
         Key("recycle_bin", "yesno", False),
         Key("crash_dumps", "yesno", True),
         Key("hibernation", "yesno", False),

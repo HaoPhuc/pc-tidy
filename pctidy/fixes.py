@@ -25,13 +25,13 @@ import time
 from . import _win, context, safety
 from .progress import Line
 from .paths import expand, inside, lp, norm
+from .plan import old_enough
 
 GB = 1024 ** 3
 MB = 1024 ** 2
 MEASURE_SECONDS = 60
 MEASURE_FILES = 300_000
 MIN_ROW_BYTES = MB              # a fix that frees less than this isn't listed
-MAX_NODE_FOLDERS = 10
 RISKS = ("Low", "Medium", "High")
 CLEANUP = "cleanup.ps1"
 INSTALLER_TYPES = (".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle")    # cleanup.ps1's list
@@ -54,9 +54,6 @@ _CONDA_PKGS = re.compile(r"(^|/)(ana|mini)conda3?/pkgs$")
 _CONDA_ENVS = re.compile(r"(^|/)(ana|mini)conda3?/envs$")
 _BROWSERS = ((re.compile(r"/google/chrome/user data$"), "Chrome"), (re.compile(r"/microsoft/edge/user data$"), "Edge"))
 _BROWSER_CACHES = ("Cache", "Code Cache", "GPUCache")
-_NODE = re.compile(r"/node_modules$")
-# node_modules of apps (VS Code's, npm's own) are not yours to delete; checked below your profile
-_APP_FOLDERS = re.compile(r"/(appdata|program files[^/]*|programdata|windows|\.vscode|\.cache)/")
 
 
 def gb(n):
@@ -147,15 +144,18 @@ class _Measure:
     def __init__(self, fix, ctx):
         self.fix, self.ctx, self.budget = fix, ctx, _Budget()
         self.admin = self.partly = False
+        self.young = 0          # items left out for being too new
 
     def allowed(self, path):
         return not self.ctx.sandbox or self.ctx.in_sandbox(path)     # the tests never measure this PC
 
-    def contents(self, folder):
-        """Every file below a folder (not the folder itself)."""
+    def contents(self, folder, min_age_days=0):
+        """Every file below a folder (not the folder itself). With min_age_days, only the items in
+        it that nothing was created or changed in for that many days, as the Temp fixes delete."""
         stack, first = [lp(folder)], True
         while stack:
             current = stack.pop()
+            top = first
             try:
                 entries = os.scandir(current)
             except PermissionError:
@@ -174,6 +174,9 @@ class _Measure:
                     try:
                         st = e.stat(follow_symlinks=False)
                     except OSError:
+                        continue
+                    if top and min_age_days and not old_enough(e.path, min_age_days):
+                        self.young += 1
                         continue
                     if e.is_symlink() or getattr(st, "st_reparse_tag", 0) in _LINK_TAGS:
                         continue
@@ -205,7 +208,7 @@ class _Measure:
             self.fix.files[_key(path)] = file_bytes(path)
 
 
-def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0):
+def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0, min_age_days=0):
     """Fill in fix.files, fix.bytes and fix.state. Returns the fix, or None if none of its places
     are inside the test sandbox."""
     m = _Measure(fix, ctx)
@@ -215,7 +218,7 @@ def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0):
     try:
         for folder in contents:
             if m.allowed(folder):
-                m.contents(folder)
+                m.contents(folder, min_age_days)
         for pattern in patterns:
             if m.allowed(pattern):
                 m.matching(pattern)
@@ -233,6 +236,9 @@ def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0):
         fix.state = "admin"
     elif m.admin or m.partly:
         fix.note = "Some of it is in folders only an administrator can open, so it may free more."
+    if m.young:
+        fix.note = (fix.note + " " if fix.note else "") + \
+            f"{m.young:,} item{'s' if m.young != 1 else ''} from the last {min_age_days} days stay."
     return fix
 
 
@@ -262,14 +268,22 @@ def table_fixes(ctx, cfg, notes):
                                                                           "leaves it alone."))
             continue
         switches, why = _TABLE_FIXES[row.fix]
-        fix = Fix(row.fix, row.title, "Low", why, _cleanup_how(cfg, switches), "Not needed", by=CLEANUP,
+        days = temp_age(row.fix, cfg)
+        title = row.title + (f" older than {days} days" if days else "")
+        fix = Fix(row.fix, title, "Low", why, _cleanup_how(cfg, switches), "Not needed", by=CLEANUP,
                   scope=row.scope)
         values = {"temp": ctx.temp, "system_root": ctx.system_root, "local": ctx.local_appdata}
         paths = [p.format(**values) for p in row.patterns]
         kind = "contents" if row.kind == "contents" else "patterns"
-        fix.action = {"delete": kind, "places": paths}
-        out.append(measure(fix, ctx, **{kind: paths}))
+        fix.action = {"delete": kind, "places": paths, "min_age_days": days}
+        out.append(measure(fix, ctx, **{kind: paths}, min_age_days=days))
     return out
+
+
+def temp_age(fix_id, cfg):
+    """[cleanup] temp_min_age_days for the two Temp fixes (problem 20: a file you opened from a ZIP
+    or an email lives in Temp, and so do a running installer's files), 0 for every other fix."""
+    return cfg.value("cleanup", "temp_min_age_days") if fix_id in ("temp-user", "temp-windows") else 0
 
 
 def _folders(scan, pattern, ctx):
@@ -330,8 +344,11 @@ def installers_fix(ctx, cfg):
     days = cfg.value("cleanup", "installers_min_age_days")
     folders = cfg.value("cleanup", "installer_folders")
     cutoff = time.time() - days * 86400
+    # High, not Medium (problem 25): a portable program runs straight from its .exe, and an old
+    # version or software you bought may not be downloadable again
     fix = Fix("installers", f"Installers older than {days} days in {', '.join(os.path.basename(f) for f in folders)}",
-              "Medium", "Download one again if you need it", _cleanup_how(cfg, ("installers",)), "Download it again",
+              "High", "Gone for good: a portable program runs from its .exe, and old versions may not be "
+              "downloadable again", _cleanup_how(cfg, ("installers",)), "Download it again, if you still can",
               by=CLEANUP)
     files = []
     for folder in folders:
@@ -345,28 +362,6 @@ def installers_fix(ctx, cfg):
             continue
     fix.action = {"delete": "files", "places": files}
     return measure(fix, ctx, files=files) if files else None
-
-
-def node_fixes(scan, ctx, cfg):
-    min_bytes = cfg.value("report", "cleanup_min_gb") * GB
-    found = []
-    home = norm(ctx.profile)
-    for folder in sorted(_folders(scan, _NODE, ctx), key=len):          # outermost first
-        n = norm(folder)
-        below = n[len(home):] if n.startswith(home + "\\") else n      # the part an app folder would be in
-        if scan.sizes[folder] < min_bytes or _APP_FOLDERS.search(below.replace("\\", "/") + "/"):
-            continue
-        if any(norm(folder).startswith(norm(f) + "\\") for f in found):
-            continue
-        found.append(folder)
-    out = []
-    for folder in sorted(found, key=lambda f: -scan.sizes[f])[:MAX_NODE_FOLDERS]:
-        project = os.path.dirname(folder)
-        fix = Fix(f"node:{folder}", f"Node.js packages of {os.path.basename(project)}", "Medium",
-                  "npm install brings them back", f"Delete the folder {folder}", f"npm install in {project}")
-        fix.action = {"delete": "files", "places": [folder]}
-        out.append(measure(fix, ctx, contents=[folder], limit=scan.sizes[folder]))
-    return out
 
 
 def duplicate_fix(leftovers, ctx):
@@ -385,13 +380,18 @@ def duplicate_fix(leftovers, ctx):
 
 
 def rebuildable_fixes(leftovers, ctx):
-    """A venv or Rust's target folder in a project that hasn't changed for 30 days."""
+    """A venv, Rust's target folder or node_modules in a project that hasn't changed for 30 days.
+    Only in projects (pctidy/leftovers.py finds them in your folders, never in AppData or dot-folders),
+    so an editor's extensions or a package manager's own node_modules are never offered (problem 24)."""
     out = []
     for r in (leftovers or {}).get("rebuildable", []):
         name = os.path.basename(r["project"])
         if r["kind"] == "venv":
             title, why, undo = (f"Python virtual environment of {name}", "Can be made again from the project's "
                                 "requirements", f"python -m venv {os.path.basename(r['path'])}, then pip install")
+        elif r["kind"] == "node":
+            title, why, undo = (f"Node.js packages of {name}", "npm install brings them back",
+                                f"npm install in {r['project']}")
         else:
             title, why, undo = f"Rust build output of {name}", "cargo build makes it again", f"cargo build in {r['project']}"
         fix = Fix(f"rebuild:{r['path']}", title, "Medium", why, f"Delete the folder {r['path']}", undo)
@@ -537,8 +537,6 @@ def build(scan, cfg, ctx=None, move=None, progress=True, leftovers=None):
     fixes += browser_fixes(scan, ctx)
     step("installers")
     fixes.append(installers_fix(ctx, cfg))
-    step("Node.js packages")
-    fixes += node_fixes(scan, ctx, cfg)
     fixes += move_fixes(move)
     fixes += [duplicate_fix(leftovers, ctx)] + rebuildable_fixes(leftovers, ctx)
     fixes += [hibernation_fix(ctx, cfg), recycle_bin_fix(ctx, cfg), windows_old_fix(scan, ctx)]

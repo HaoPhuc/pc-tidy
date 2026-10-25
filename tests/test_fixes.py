@@ -10,8 +10,8 @@ import subprocess
 import pytest
 
 import scanner
-from pctidy import context, fixes, settings
-from support import write
+from pctidy import context, fixes, leftovers, settings
+from support import age_tree, write
 
 MB = 1024 ** 2
 GB = 1024 ** 3
@@ -42,13 +42,13 @@ def rows_by_id(result):
 def test_fixes_are_measured_exactly_and_ranked_lowest_risk_first(tmp_path):
     home, win = tmp_path / "profile", tmp_path / "Windows"
     local = home / "AppData" / "Local"
-    blob(local / "Temp" / "a.tmp", 3)
+    blob(local / "Temp" / "a.tmp", 3, age_days=10)
     blob(local / "pip" / "cache" / "wheel.whl", 2)
     blob(local / "uv" / "cache" / "x" / "y.bin", 1.5)
     blob(local / "D3DSCache" / "s.bin", 1.2)
     blob(local / "CrashDumps" / "app.dmp", 2.2)
     blob(local / "CrashDumps" / "notes.txt", 5)            # not a .dmp: not part of the fix
-    blob(win / "Temp" / "w.tmp", 4)
+    blob(win / "Temp" / "w.tmp", 4, age_days=10)
     blob(win / "MEMORY.DMP", 1.5)
     blob(win / "Minidump" / "m.dmp", 1)
     blob(win / "notepad.exe", 3)                           # never part of any fix
@@ -65,8 +65,9 @@ def test_fixes_are_measured_exactly_and_ranked_lowest_risk_first(tmp_path):
     assert rows["caches"]["bytes"] == int(3.5 * MB)
     assert rows["crash-dumps-windows"]["bytes"] == int(2.5 * MB)
     assert rows["crash-dumps-user"]["bytes"] == int(2.2 * MB)
-    assert rows["installers"]["bytes"] == 6 * MB and rows["installers"]["risk"] == "Medium"
-    assert [r["risk"] for r in result["rows"]] == ["Low"] * 6 + ["Medium"]
+    assert rows["installers"]["bytes"] == 6 * MB and rows["installers"]["risk"] == "High"     # problem 25
+    assert [r["risk"] for r in result["rows"]] == ["Low"] * 6 + ["High"]
+    assert rows["temp-user"]["title"] == "Your Temp files older than 7 days"
     totals = [r["total"] for r in result["rows"]]
     assert totals == sorted(totals) and totals[-1] == sum(r["bytes"] for r in result["rows"])
     assert rows["caches"]["how"] == "cleanup.ps1: pip_cache, uv_cache (on)"
@@ -112,7 +113,7 @@ def test_file_bytes(tmp_path):
 
 
 def test_a_folder_this_window_cant_open_needs_admin_to_measure(tmp_path):
-    blob(tmp_path / "profile" / "AppData" / "Local" / "Temp" / "a.tmp", 3)
+    blob(tmp_path / "profile" / "AppData" / "Local" / "Temp" / "a.tmp", 3, age_days=10)
     locked = tmp_path / "Windows" / "Temp"
     blob(locked / "w.tmp", 4)
     deny = subprocess.run(["icacls", str(locked), "/deny", "*S-1-1-0:(RD)"], capture_output=True, text=True)
@@ -131,8 +132,9 @@ def test_a_folder_this_window_cant_open_needs_admin_to_measure(tmp_path):
 
 
 def test_a_file_counts_once(tmp_path):
-    """An old installer that is also offered for moving, and a node_modules inside a folder offered
-    for moving: each byte is counted by the fix highest in the list only."""
+    """An old installer that is also offered for moving: each byte is counted by the fix highest in the
+    list only. Moving it can be undone (Medium) and deleting it can't (High), so the move claims it,
+    and the installers fix, left with nothing, isn't listed."""
     home = tmp_path / "profile"
     setup = blob(home / "Downloads" / "big-setup.exe", 6, age_days=30)
     project = home / "Documents" / "robot"
@@ -146,7 +148,7 @@ def test_a_file_counts_once(tmp_path):
     result = build(tmp_path, fake_pc(tmp_path), move=move)
 
     ids = [r["id"] for r in result["rows"]]
-    assert ids == [f"move:{project}", "installers"]       # the move claims node_modules, the installer claims the file
+    assert ids == [f"move:{project}", f"move:{setup}"]
     assert result["rows"][-1]["total"] == 16 * MB
     assert rows_by_id(result)[f"move:{project}"]["how"] == f'python move_off_c.py --path "{project}"'
 
@@ -165,7 +167,7 @@ def test_browser_cache_counts_only_the_cache(tmp_path):
 
 
 def test_the_recycle_bin_is_high_risk_and_last(tmp_path):
-    blob(tmp_path / "profile" / "AppData" / "Local" / "Temp" / "a.tmp", 3)
+    blob(tmp_path / "profile" / "AppData" / "Local" / "Temp" / "a.tmp", 3, age_days=10)
     ctx = fake_pc(tmp_path, PCTIDY_TEST_RECYCLE_BIN=f"{2 * GB},312")
 
     result = build(tmp_path, ctx)
@@ -235,6 +237,7 @@ def test_folders_inside_temp_are_left_to_the_temp_fix(tmp_path):
     copy = temp / "old-copy"
     blob(copy / "anaconda3" / "pkgs" / "x.tar.bz2", 3)
     blob(copy / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default" / "Cache" / "f", 2)
+    age_tree(copy, 10)
 
     rows = rows_by_id(build(tmp_path, fake_pc(tmp_path)))
 
@@ -251,13 +254,27 @@ def test_two_fixes_with_the_same_name_say_where(tmp_path):
     assert titles == [f"conda package cache in {home / 'anaconda3'}", f"conda package cache in {home / 'miniconda3'}"]
 
 
-def test_node_modules_of_apps_are_not_offered(tmp_path):
+def test_node_modules_only_of_a_quiet_project(tmp_path):
+    """Problem 24: node_modules is offered only in a project in your folders that nobody touched for
+    30 days, never an editor's extensions or a package manager's own."""
     home = tmp_path / "profile"
-    write(tmp_path / "settings.ini", "[report]\ncleanup_min_gb = 0.001\n")
-    blob(home / "Documents" / "robot" / "node_modules" / "a.js", 2)
-    blob(home / "AppData" / "Roaming" / "npm" / "node_modules" / "b.js", 2)       # npm's own
-    blob(home / ".vscode" / "extensions" / "x" / "node_modules" / "c.js", 2)       # VS Code's
+    robot = home / "Documents" / "robot"
+    blob(robot / "node_modules" / "a.js", 2)
+    write(robot / "package.json", "{}", age_days=40)
+    busy = home / "Documents" / "website"
+    blob(busy / "node_modules" / "b.js", 2)
+    write(busy / "package.json", "{}")                                             # changed yesterday
+    for app in (home / "AppData" / "Roaming" / "npm", home / ".vscode" / "extensions" / "x",
+                home / ".vscode-insiders" / "extensions" / "y", home / ".cursor" / "extensions" / "z",
+                home / "scoop" / "persist" / "nodejs" / "bin"):
+        blob(app / "node_modules" / "c.js", 2, age_days=40)
+        write(app / "package.json", "{}", age_days=40)
+    ctx = fake_pc(tmp_path)
+    cfg = settings.load(ctx)
 
-    ids = [r["id"] for r in build(tmp_path, fake_pc(tmp_path))["rows"]]
+    result = fixes.build(scanner.Scan([str(home)]), cfg, ctx, progress=False,
+                         leftovers=leftovers.analyse(ctx, cfg, progress=False))
 
-    assert ids == [f"node:{home / 'Documents' / 'robot' / 'node_modules'}"]
+    ids = [r["id"] for r in result["rows"]]
+    assert ids == [f"rebuild:{robot / 'node_modules'}"]
+    assert result["rows"][0]["title"] == "Node.js packages of robot"

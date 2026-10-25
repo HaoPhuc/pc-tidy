@@ -87,6 +87,45 @@ def tree_stats(path):
     return out
 
 
+def _made_or_changed(st):
+    """When a file was created or changed, whichever is newer. A file copied or unpacked keeps its
+    old modified time but gets a new creation time (st_ctime on Windows before Python 3.12)."""
+    return max(st.st_mtime, st.st_birthtime if hasattr(st, "st_birthtime") else st.st_ctime)
+
+
+def newest_time(path):
+    """The newest time anything in an item was created or changed: the item itself and everything
+    below it, without following links. A folder that can't be read counts as new: what it holds
+    is unknown."""
+    try:
+        st = os.lstat(lp(path))
+    except OSError:
+        return time.time()
+    newest = _made_or_changed(st)
+    if is_link(st) or not is_dir_stat(st):
+        return newest
+    stack = [lp(path)]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            return time.time()
+        for e in entries:
+            try:
+                est = e.stat(follow_symlinks=False)
+            except OSError:
+                return time.time()
+            newest = max(newest, _made_or_changed(est))
+            if is_dir_stat(est) and not is_link(est):
+                stack.append(e.path)
+    return newest
+
+
+def old_enough(path, days):
+    """True if nothing in an item was created or changed in the last `days` days (always for 0)."""
+    return days <= 0 or newest_time(path) < time.time() - days * 86400
+
+
 _CONTENT_KEYS = ("kind", "size", "mtime_ns", "files", "dirs", "bytes", "newest_mtime_ns", "links")
 
 

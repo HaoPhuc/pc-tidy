@@ -7,14 +7,22 @@ unrelated crash from counting as the known failure.
 
 Fixed in M2 (the safety core): 3, 4, 5, 13, 15. Fixed in M4 (cleanup.ps1 on settings.ini): 1, 14.
 Fixed in M9 (cleanup.ps1 on the executor), numbers from docs/PLAN-3.md: 17, 18, 19.
+Fixed in M10 (safer fixes): 20, 21, 22, 23, 26; 24 and 25 are in test_fixes.py.
 Nothing is pinned any more; known() stays for the next problem found.
 """
 
+import os
+import time
+from pathlib import Path
+
 import pytest
 
-from pctidy import context, safety, settings
-from support import snapshot, write
+from pctidy import _win, context, executor, safety, settings
+from pctidy.plan import Plan, fingerprint
+from support import age, age_tree, snapshot, write
 from test_cleanup_ps1 import cleanup_settings
+
+MB = 1024 ** 2
 
 
 def known(number, why):
@@ -181,3 +189,164 @@ def test_move_to_a_subst_letter_on_the_same_volume_is_refused(run, profile, subs
     assert snapshot(lectures) == before
     assert not (subst_drive.target / "From-C").exists()
     assert lectures.exists(), "the originals were deleted, but the copy is on the same volume, so C: gained nothing"
+
+
+# ---------- M10, numbers from docs/PLAN-3.md ----------
+
+def test_the_temp_fix_leaves_anything_from_the_last_week(run, profile, tmp_path):
+    """Problem 20, fixed in M10: a file opened from a ZIP or an email lives in Temp while you work on
+    it, and so do a running installer's files. Only items nothing was created or changed in for
+    temp_min_age_days (7) go."""
+    temp = profile / "AppData" / "Local" / "Temp"
+    old = write(temp / "old.tmp", b"o", age_days=30)
+    fresh = write(temp / "report.docx", b"edited today", age_days=1)
+    unpacked = write(temp / "from-a-zip.xlsx", b"x", age_days=0)       # unpacked now, with the ZIP's old date
+    t = time.time() - 300 * 86400
+    os.utime(unpacked, (t, t))
+    old_folder = age_tree(write(temp / "old-setup" / "data.cab", b"c").parent, 30)
+    busy_folder = age_tree(write(temp / "running-setup" / "data.cab", b"c").parent, 30)
+    write(busy_folder / "progress.log", b"still writing", age_days=0)
+    age(busy_folder, 30)            # the folder itself looks old: what is in it counts
+    cleanup_settings(tmp_path, switches_on={"temp_files"})
+
+    result = run.python("pc_tidy.py", "cleanup", input="yes\n")
+
+    assert result.returncode == 0, result.output
+    assert "Your Temp files older than 7 days: delete" in result.stdout
+    assert "(3 newer items stay)" in result.stdout, result.output
+    assert not old.exists() and not old_folder.exists() and not (temp / "tmp1.tmp").exists()
+    assert fresh.exists() and unpacked.exists() and (busy_folder / "data.cab").exists()
+
+
+def test_the_copy_that_stays_is_never_deleted_by_another_fix(run, profile):
+    """Problem 21, fixed in M10: the copy of a duplicate that stays (the older one, in Downloads) is
+    also an old installer. Picked together, the two fixes deleted both copies."""
+    stays = write(profile / "Downloads" / "tool.exe", b"T" * (2 * MB), age_days=40)
+    extra = write(profile / "Desktop" / "tool.exe", b"T" * (2 * MB), age_days=20)
+
+    result = run.python("pc_tidy.py", "--no-llm", "--no-open", input="1,2\nyes\nyes\n\n")
+
+    assert result.returncode == 0, result.output
+    assert f"Left out {stays}: it is the copy that stays of {extra}" in result.stdout, result.output
+    assert stays.exists() and not extra.exists()
+    assert not (profile / "Downloads" / "old-setup.msi").exists()        # the rest of the installers fix ran
+
+
+def test_an_extra_copy_stays_if_the_kept_copy_changed_but_kept_its_size_and_time(tmp_path):
+    """Problem 22, fixed in M10: a tool that edits a file and keeps its modified time (tag editors can)
+    leaves size, time and file ID alone. The bytes are compared right before deleting the extra copy."""
+    keep = write(tmp_path / "Documents" / "song.mp3", b"A" * 4096, age_days=40)
+    extra = write(tmp_path / "Downloads" / "song.mp3", b"A" * 4096)
+    plan = Plan("test", context.current())
+    action = plan.add_delete(extra)
+    action["keep"], action["keep_fp"] = str(keep), fingerprint(keep)
+    st = os.stat(keep)
+    keep.write_bytes(b"B" * 4096)                           # new tags, same size
+    os.utime(keep, ns=(st.st_atime_ns, st.st_mtime_ns))     # and the time put back
+    assert fingerprint(keep) == action["keep_fp"]
+
+    result = executor.execute(plan)
+
+    assert [o.reason for o in result.skipped] == [
+        "the copy that would stay isn't identical to this one any more, so this one stays too"]
+    assert extra.exists()
+
+
+def test_run_as_another_account_only_the_windows_folders_are_cleaned(run, profile, tmp_path):
+    """Problem 23, fixed in M10: Run as administrator with a parent's password runs pc-tidy as the
+    parent, whose Temp and Downloads aren't the person's at the screen."""
+    cleanup_settings(tmp_path, switches_on={"temp_files", "installers"})
+    someone = "SOMEPC\\someone-else"
+
+    result = run.python("pc_tidy.py", "cleanup", input="yes\n", env={"PCTIDY_TEST_SESSION_USER": someone})
+
+    assert result.returncode == 0, result.output
+    assert f"but {someone} is signed in, so only the Windows folders are cleaned" in result.stdout
+    assert f"Left out Your Temp files older than 7 days: it belongs to {someone}" in result.stdout
+    assert (profile / "AppData" / "Local" / "Temp" / "tmp1.tmp").exists()
+    assert (profile / "Downloads" / "old-setup.msi").exists()
+
+
+def test_the_guided_flow_says_whose_folders_they_are(run, profile):
+    temp = profile / "AppData" / "Local" / "Temp"
+    files = [write(temp / f"cache{i}.tmp", b"c" * MB, age_days=10) for i in range(3)]
+    someone = "SOMEPC\\someone-else"
+
+    result = run.python("pc_tidy.py", "--no-llm", "--no-open", input="1\n\n", env={"PCTIDY_TEST_SESSION_USER": someone})
+
+    assert f"but {someone} is signed in" in result.stdout, result.output
+    assert f"(belongs to {someone}, and this window runs as" in result.stdout
+    assert "DRY RUN" not in result.stdout
+    assert all(f.exists() for f in files)
+
+
+def test_the_accounts_can_be_read():
+    me = _win.process_user()
+    assert me and "\\" in me
+    session = _win.session_user()          # None in a session nobody is signed in to (a service)
+    assert session is None or "\\" in session
+
+
+def test_app_folders_are_never_offered_as_moves(run, profile, tmp_path):
+    """Problem 26, fixed in M10: Outlook's mail files, game saves and other apps' folders in Documents
+    break the app when moved by hand."""
+    outlook = write(profile / "Documents" / "Outlook Files" / "me.pst", b"mail").parent
+    archive = write(profile / "Documents" / "old mail" / "2019.pst", b"mail").parent
+    saves = write(profile / "Documents" / "My Games" / "save1.dat", b"save").parent
+
+    results = [run.python("move_off_c.py", "--path", p, "--to", tmp_path / "dest") for p in (outlook, archive, saves)]
+
+    assert "Outlook Files is where an app keeps its own files" in results[0].stdout, results[0].output
+    assert "it holds Outlook's mail files (.pst or .ost)" in results[1].stdout, results[1].output
+    assert "My Games is where an app keeps its own files" in results[2].stdout, results[2].output
+    assert outlook.exists() and archive.exists() and saves.exists()
+
+
+def test_app_folders_are_left_out_of_the_candidates_with_a_tip(profile):
+    import move_off_c
+    import scanner
+    write(profile / "Documents" / "Outlook Files" / "me.pst", b"m" * 3000)
+    write(profile / "Documents" / "Thesis" / "data.bin", b"d" * 3000)
+    scan = scanner.Scan([str(profile)])
+
+    paths = [c["path"] for c in move_off_c.move_candidates(scan, str(profile), min_bytes=2000)]
+    tips = move_off_c.move_tips(scan, str(profile), min_bytes=2000)
+
+    assert str(profile / "Documents" / "Thesis") in paths
+    assert not any("Outlook Files" in p for p in paths)
+    assert any("Outlook Files" in t and "isn't offered" in t for t in tips)
+
+
+def test_a_move_says_it_leaves_the_backup(run, profile, tmp_path):
+    import move_off_c
+    result = run.python("move_off_c.py", "--path", profile / "Videos" / "Lectures", "--to", tmp_path / "dest",
+                        input="no\n")
+    assert move_off_c.BACKUP_NOTE in result.stdout, result.output
+
+
+def test_a_file_open_in_another_program_is_found_before_copying(tmp_path):
+    folder = tmp_path / "Lectures"
+    write(folder / "a.mp4", b"a")
+    held = write(folder / "notes" / "open.docx", b"open in Word")
+
+    assert executor._first_open_elsewhere(str(folder)) is None
+    with open(held, "rb"):
+        assert executor._first_open_elsewhere(str(folder)) == os.path.join("notes", "open.docx")
+        assert _win.open_elsewhere(str(held))
+    assert not _win.open_elsewhere(str(held))
+
+
+def test_a_move_with_a_file_open_copies_nothing(tmp_path, profile, ntfs_volume):
+    lectures = profile / "Videos" / "Lectures"
+    dest = Path(ntfs_volume.root) / tmp_path.name / "From-C" / "Lectures"
+    plan = Plan("test", context.current())
+    plan.add_move(lectures, dest)
+
+    with open(lectures / "lecture1.mp4", "rb"):           # playing in a video player
+        result = executor.execute(plan)
+
+    (outcome,) = result.outcomes
+    assert outcome.status == "skipped" and "lecture1.mp4 is open in another program, so nothing was copied" \
+        in outcome.reason
+    assert not dest.exists() and not Path(str(dest) + executor.PARTIAL).exists()
+    assert (lectures / "lecture1.mp4").exists()

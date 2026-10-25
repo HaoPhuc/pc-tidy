@@ -18,7 +18,7 @@ import shutil
 import subprocess
 
 from . import context, guided, safety, settings
-from .fixes import installers_fix
+from .fixes import installers_fix, temp_age
 
 COMMAND = ".\\cleanup.ps1"
 NOT_IN_TESTS = "not in the tests, where it would act on this PC itself"
@@ -57,8 +57,10 @@ def rows(ctx, cfg, notes):
         row = allowed[fix]
         places = [p.format(**values) for p in row.patterns if part is None or part in p]
         kind = "contents" if row.kind == "contents" else "patterns"
-        out.append(_row(fix if part is None else switch.replace("_", "-"), title or row.title, "Low",
-                        {"delete": kind, "places": places}, row.scope))
+        days = temp_age(fix, cfg)
+        title = (title or row.title) + (f" older than {days} days" if days else "")
+        out.append(_row(fix if part is None else switch.replace("_", "-"), title, "Low",
+                        {"delete": kind, "places": places, "min_age_days": days}, row.scope))
 
     if c.installers:
         fix = installers_fix(ctx, cfg)
@@ -129,8 +131,12 @@ def _installed_apps():
 
 
 def _why_not_here(ctx, row):
-    """Why this run leaves a fix out, or None. Only the tests leave fixes out: a tool or the Recycle
-    Bin would act on this PC itself, and so would folders outside the test's own."""
+    """Why this run leaves a fix out, or None. Run as another account than the person signed in,
+    everything but the Windows folders belongs to someone else (problem 23). The tests also leave
+    out what would act on this PC itself: a tool, the Recycle Bin, folders outside their own."""
+    other = ctx.other_account()
+    if other and row["scope"] == "user":
+        return f"it belongs to {other[1]}, and this window runs as {other[0]}"
     if not ctx.sandbox:
         return None
     a = row["action"]
@@ -153,6 +159,10 @@ def run(dry_run=False, ctx=None):
     if problems:
         print(settings.refusal(cfg, problems, COMMAND))
         return settings.EXIT
+    other = ctx.other_account()
+    if other:
+        print(f"This window runs as {other[0]}, but {other[1]} is signed in, so only the Windows folders are "
+              f"cleaned. For the rest, run .\\cleanup.ps1 from {other[1]}'s own account.")
     notes = []
     wanted = rows(ctx, cfg, notes)
     if not wanted and not notes:
@@ -173,14 +183,15 @@ def run(dry_run=False, ctx=None):
         return 0
 
     dry = guided.DryRun(ctx, cfg, doable)
+    empty = [r["title"] + (f" ({dry.young[r['id']]:,} newer item{'s' if dry.young[r['id']] != 1 else ''} stay)"
+                           if dry.young[r["id"]] else "") for r in dry.rows if not dry.by_fix.get(r["id"])]
+    if empty:
+        print(f"Nothing to remove in: {', '.join(empty)}.")
     if dry.empty:
         for path, why in dry.refused:
             print(f"Left out {path}: {why}.")
         print("Nothing was changed: there is nothing to remove.")
         return 0
-    empty = [r["title"] for r in dry.rows if not dry.by_fix.get(r["id"])]
-    if empty:
-        print(f"Nothing to remove in: {', '.join(empty)}.")
     dry.rows = [dict(r, n=n) for n, r in enumerate([r for r in dry.rows if dry.by_fix.get(r["id"])], 1)]
     header = ("\nDRY RUN: nothing will be changed. This is exactly what .\\cleanup.ps1 would do:" if dry_run
               else "\nDRY RUN: this is exactly what will happen. Nothing has changed yet.")
