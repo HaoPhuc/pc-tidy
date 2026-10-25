@@ -23,6 +23,7 @@ import shutil
 import time
 
 from . import _win, context, safety
+from ._win import plain_path
 from .progress import Line
 from .paths import expand, inside, lp, norm
 from .plan import old_enough
@@ -149,9 +150,10 @@ class _Measure:
     def allowed(self, path):
         return not self.ctx.sandbox or self.ctx.in_sandbox(path)     # the tests never measure this PC
 
-    def contents(self, folder, min_age_days=0):
+    def contents(self, folder, min_age_days=0, deletable_only=False):
         """Every file below a folder (not the folder itself). With min_age_days, only the items in
-        it that nothing was created or changed in for that many days, as the Temp fixes delete."""
+        it that nothing was created or changed in for that many days, as the Temp fixes delete; with
+        deletable_only, only the items the safety check lets pc-tidy delete."""
         stack, first = [lp(folder)], True
         while stack:
             current = stack.pop()
@@ -178,6 +180,8 @@ class _Measure:
                     if top and min_age_days and not old_enough(e.path, min_age_days):
                         self.young += 1
                         continue
+                    if top and deletable_only and safety.why_refused(plain_path(e.path), "delete", self.ctx):
+                        continue          # it holds pc-tidy itself, say: the dry run leaves it out too
                     if e.is_symlink() or getattr(st, "st_reparse_tag", 0) in _LINK_TAGS:
                         continue
                     if e.is_dir(follow_symlinks=False):
@@ -208,7 +212,7 @@ class _Measure:
             self.fix.files[_key(path)] = file_bytes(path)
 
 
-def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0, min_age_days=0):
+def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0, min_age_days=0, deletable_only=False):
     """Fill in fix.files, fix.bytes and fix.state. Returns the fix, or None if none of its places
     are inside the test sandbox."""
     m = _Measure(fix, ctx)
@@ -218,7 +222,7 @@ def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0, min_age_days=
     try:
         for folder in contents:
             if m.allowed(folder):
-                m.contents(folder, min_age_days)
+                m.contents(folder, min_age_days, deletable_only)
         for pattern in patterns:
             if m.allowed(pattern):
                 m.matching(pattern)
@@ -243,8 +247,13 @@ def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0, min_age_days=
 
 
 # ---------- the fixes ----------
+PICK = "pick it in pc-tidy's list"       # pc-tidy.exe has no cleanup.ps1: its guided flow does every fix
+
+
 def _cleanup_how(cfg, switches):
     """'cleanup.ps1: pip_cache, uv_cache (on)', or what to switch on first."""
+    if context.FROZEN:
+        return PICK
     off = [k for k in switches if not cfg.value("cleanup", k)]
     if not off:
         return f"{CLEANUP}: {', '.join(switches)} (on)"
@@ -252,6 +261,8 @@ def _cleanup_how(cfg, switches):
 
 
 def _listed_how(cfg, key, value, what):
+    if context.FROZEN:
+        return PICK
     listed = [x.lower() for x in cfg.value("cleanup", key)]
     if value.lower() in listed:
         return f"{CLEANUP}: {what} is in {key}"
@@ -276,7 +287,7 @@ def table_fixes(ctx, cfg, notes):
         paths = [p.format(**values) for p in row.patterns]
         kind = "contents" if row.kind == "contents" else "patterns"
         fix.action = {"delete": kind, "places": paths, "min_age_days": days}
-        out.append(measure(fix, ctx, **{kind: paths}, min_age_days=days))
+        out.append(measure(fix, ctx, **{kind: paths}, min_age_days=days, deletable_only=True))
     return out
 
 
@@ -356,8 +367,8 @@ def installers_fix(ctx, cfg):
             with os.scandir(folder) as entries:
                 for e in entries:
                     if (os.path.splitext(e.name)[1].lower() in INSTALLER_TYPES and e.is_file()
-                            and e.stat().st_mtime < cutoff):
-                        files.append(e.path)
+                            and e.stat().st_mtime < cutoff and not (ctx.exe and norm(e.path) == norm(ctx.exe))):
+                        files.append(e.path)        # never pc-tidy.exe itself, downloaded there
         except OSError:
             continue
     fix.action = {"delete": "files", "places": files}
@@ -371,7 +382,7 @@ def duplicate_fix(leftovers, ctx):
         return None
     fix = Fix("duplicates", f"Extra copies of files in Downloads, Desktop or Sorted ({len(pairs)})", "Medium",
               "An identical copy of each stays where it is",
-              "python pc_tidy.py (it shows each copy that goes and the one that stays, then asks)",
+              f"{context.command('').strip()} (it shows each copy that goes and the one that stays, then asks)",
               "None, but the identical copy stays", by="pc-tidy")
     fix.files = {_key(extra): file_bytes(extra) for extra, _keep, _efp, _kfp in pairs}
     fix.bytes = sum(fix.files.values())
@@ -407,9 +418,9 @@ def move_fixes(move):
     if not move or not move.get("dest"):
         return out
     for c in move["candidates"]:
+        how = PICK if context.FROZEN else f'python move_off_c.py --path "{c["path"]}"'
         fix = Fix(f"move:{c['path']}", f"Move {c['path']} to {move['dest']}", "Medium",
-                  "Can be undone", f'python move_off_c.py --path "{c["path"]}"', "python move_off_c.py --undo",
-                  by="move_off_c.py")
+                  "Can be undone", how, context.undo_command(), by="move_off_c.py")
         fix.action = {"move": c["path"]}
         fix.bytes = c["size"]
         if c["kind"] == "file":
@@ -571,7 +582,7 @@ def build(scan, cfg, ctx=None, move=None, progress=True, leftovers=None):
     if any(f.state == "admin" for f in fixes):
         out["notes"].append("Rows that say 'needs admin to measure': run the report in PowerShell opened as "
                             "administrator to measure them.")
-    if any(f.by == CLEANUP for f in fixes):
+    if any(f.by == CLEANUP for f in fixes) and not context.FROZEN:
         out["notes"].append(f"Rows done by {CLEANUP}: run .\\cleanup.ps1 -DryRun, then .\\cleanup.ps1, in "
                             "PowerShell opened as administrator. It does every [cleanup] switch that is yes in "
                             "settings.ini, so switch off the ones you don't want first: python pc_tidy.py "

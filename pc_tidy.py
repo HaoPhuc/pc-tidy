@@ -7,6 +7,7 @@ Usage:
     python pc_tidy.py                    # the guided flow
     python pc_tidy.py --no-llm --no-open # ... without the local AI, and without opening the PDF
     python pc_tidy.py recover            # check runs that were interrupted, and decide about half-done moves
+    python pc_tidy.py undo               # put the last moves off C: back
     python pc_tidy.py status             # what unattended runs couldn't do, and anything left unfinished
     python pc_tidy.py status --dismiss   # ... and then clear those notices
     python pc_tidy.py settings show      # every setting, and where its value came from
@@ -42,9 +43,20 @@ def recover(ctx):
         return 0
     if report.undecided:
         print(f"\n{len(report.undecided)} interrupted move(s) still wait for your decision. pc-tidy won't touch "
-              "those paths until you decide: run python pc_tidy.py recover again.")
+              f"those paths until you decide: run {context.command('recover')} again.")
         return 3
     return 0
+
+
+def undo(ctx):
+    """Put the last moves off C: back, as python move_off_c.py --undo does (pc-tidy.exe has no scripts)."""
+    import move_off_c
+    try:      # finish what an interrupted run left first, as move_off_c.py does
+        recovery.at_start(ctx, "pc_tidy.py undo", ask=ui.ask)
+    except lock.Busy:
+        print(lock.BUSY_MESSAGE)
+        return lock.BUSY_EXIT
+    return move_off_c.undo(ctx)
 
 
 def status(ctx, dismiss=False):
@@ -54,7 +66,7 @@ def status(ctx, dismiss=False):
         print("Nothing needs your attention.")
         return 0
     if waiting:
-        print(f"{len(waiting)} interrupted move(s) wait for your decision (python pc_tidy.py recover):")
+        print(f"{len(waiting)} interrupted move(s) wait for your decision ({context.command('recover')}):")
         for item in waiting:
             print(f"  {item.src}  ->  {item.dst}")
     if notices:
@@ -65,7 +77,7 @@ def status(ctx, dismiss=False):
             journal.dismiss_notices(ctx)
             print("Dismissed.")
         else:
-            print("Clear these with: python pc_tidy.py status --dismiss")
+            print(f"Clear these with: {context.command('status --dismiss')}")
     return 3 if waiting else 0
 
 
@@ -96,7 +108,7 @@ def settings_edit(ctx):
             subprocess.run([sys.executable, editor, path] if editor else ["notepad.exe", path])
         except OSError as e:
             print(f"Couldn't start Notepad ({e}). Open {path} in any text editor, then run: "
-                  "python pc_tidy.py settings check")
+                  f"{context.command('settings check')}")
             return 1
         if not editor and time.monotonic() - started < 2:
             # Windows 11's Notepad shows the file in a window that was already open, and returns at once
@@ -197,6 +209,8 @@ def selftest(ctx):
         return platform.platform()
 
     def packages():
+        if context.FROZEN:
+            return "none needed: pc-tidy.exe saves its report as a web page"
         import docx  # noqa: F401
         import pypdf  # noqa: F401
         import reportlab  # noqa: F401
@@ -217,7 +231,7 @@ def selftest(ctx):
     def the_settings():
         cfg = settings.load(ctx, create=True)
         problems = cfg.errors()
-        return f"{len(problems)} mistake(s): python pc_tidy.py settings check" if problems else cfg.path
+        return f"{len(problems)} mistake(s): {context.command('settings check')}" if problems else cfg.path
 
     def dry_run_and_run():
         problem = safety.temp_problem(ctx)
@@ -244,9 +258,10 @@ def selftest(ctx):
     check("settings.ini", the_settings)
     check("a dry run and a run", dry_run_and_run)
     if failed:
-        print(f"\n{len(failed)} check(s) failed. Fix them, then run: python pc_tidy.py selftest")
+        print(f"\n{len(failed)} check(s) failed. Fix them, then run: {context.command('selftest')}")
         return 1
-    print("\nEverything works. Double-click pc-tidy.cmd to start.")
+    print("\nEverything works. " + ("Double-click pc-tidy.exe to start." if context.FROZEN
+                                   else "Double-click pc-tidy.cmd to start."))
     return 0
 
 
@@ -294,6 +309,7 @@ def main():
     ap.add_argument("--no-open", action="store_true", help="the guided flow without opening the PDF report")
     sub = ap.add_subparsers(dest="command")
     sub.add_parser("recover", help="check interrupted runs, and decide about half-done moves")
+    sub.add_parser("undo", help="put the last moves off C: back (what python move_off_c.py --undo does)")
     st = sub.add_parser("status", help="notices from unattended runs, and unfinished work")
     st.add_argument("--dismiss", action="store_true", help="clear the notices after showing them")
     se = sub.add_parser("settings", help="show, check, edit or import settings.ini")
@@ -315,6 +331,8 @@ def main():
         return selftest(ctx)
     if args.command == "recover":
         return recover(ctx)
+    if args.command == "undo":
+        return undo(ctx)
     if args.command == "status":
         return status(ctx, args.dismiss)
     if args.command == "settings":
@@ -332,4 +350,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(errors.run(main, "pc_tidy.py"))
+    code = errors.run(main, "pc_tidy.py")
+    if context.FROZEN and len(sys.argv) == 1:
+        # pc-tidy.exe double-clicked: its window closes when it ends (pc-tidy.cmd has pause for this)
+        ui.ask("\nPress Enter to close.")
+    sys.exit(code)

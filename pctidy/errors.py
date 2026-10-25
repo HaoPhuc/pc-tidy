@@ -25,11 +25,13 @@ def run(main, command):
     debug = DEBUG_FLAG in sys.argv
     if debug:
         sys.argv.remove(DEBUG_FLAG)
+    if context.FROZEN:
+        command = context.EXE_NAME
     try:
         _test_hook()
         return main()
     except KeyboardInterrupt:
-        print(f"\n{command} stopped (Ctrl+C). What it did is recorded: run python pc_tidy.py recover to check.")
+        print(f"\n{command} stopped (Ctrl+C). What it did is recorded: run {context.command('recover')} to check.")
         return 1
     except Exception as e:      # SystemExit (argparse, --help) passes through untouched
         print(f"\n{command} stopped: {explain(e)}")
@@ -48,13 +50,15 @@ def explain(e):
     """What happened and the next step, in a sentence or two."""
     if isinstance(e, ImportError):
         name = getattr(e, "name", None) or str(e)
+        if context.FROZEN:
+            return f"a part it needs is missing from pc-tidy.exe ({name}). Download pc-tidy.exe again."
         return (f"a part it needs isn't installed ({name}). Double-click setup.cmd in the pc-tidy folder, "
                 "or run: pip install -r requirements.txt")
     if isinstance(e, OSError):
         where = f" ({e.filename})" if getattr(e, "filename", None) else ""
         if _win.disk_full(e):
-            return ("the disk is full. Free some space first: python pc_tidy.py lists the low-risk fixes "
-                    "at the top, which come back on their own.")
+            return (f"the disk is full. Free some space first: {context.command('').strip()} lists the low-risk "
+                    "fixes at the top, which come back on their own.")
         if _win.in_use(e):
             return f"a file is open in another program{where}. Close that program, then run this again."
         if isinstance(e, PermissionError):

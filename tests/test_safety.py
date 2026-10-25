@@ -272,13 +272,25 @@ def test_temp_check(fake, temp, ok):
         assert problem == f"Your TEMP variable points at {temp}, which isn't a temp folder. The Temp fix was skipped."
 
 
-def test_a_temp_folder_with_pc_tidy_in_it_says_so(fake, tmp_path):
-    """Run straight from a ZIP, Explorer unpacks pc-tidy into Temp: cleaning Temp would delete it."""
+def test_pc_tidy_in_temp_leaves_out_only_the_item_that_holds_it(fake, tmp_path):
+    """Run straight from a ZIP, Explorer unpacks pc-tidy into Temp. The Temp fix still runs: only the
+    folder pc-tidy is in is left out (M11; before, the whole Temp fix was)."""
     temp = f"{tmp_path}\\{LOCAL}\\Temp".replace("/", "\\")
     ctx = context_for(fake, TEMP=temp)
-    ctx.app_dir = temp + "\\pc-tidy"
-    assert safety.temp_problem(ctx).startswith(f"pc-tidy's own folder ({ctx.app_dir}) is inside your Temp folder, "
-                                               "so the Temp fix was skipped")
+    ctx.app_dir = temp + "\\Temp1_pc-tidy.zip\\pc-tidy"
+    assert safety.temp_problem(ctx) is None
+    assert "contains" in safety.why_refused(temp + "\\Temp1_pc-tidy.zip", "delete", ctx)
+    assert safety.why_refused(temp + "\\setup-leftovers", "delete", ctx) is None
+
+
+def test_pc_tidy_exe_is_never_touched_and_neither_is_its_folder(fake, tmp_path):
+    temp = f"{tmp_path}\\{LOCAL}\\Temp".replace("/", "\\")
+    exe = temp + "\\Temp1_pc-tidy.zip\\pc-tidy.exe"
+    ctx = context_for(fake, sandbox=True, TEMP=temp, PCTIDY_TEST_EXE=exe)
+    assert safety.why_refused(exe, "delete", ctx) == f"{exe} is pc-tidy itself"
+    assert "contains" in safety.why_refused(temp + "\\Temp1_pc-tidy.zip", "delete", ctx)
+    assert safety.why_refused(exe, "move", ctx) == f"{exe} is pc-tidy itself"
+    assert safety.temp_problem(ctx) is None
 
 
 def test_a_drive_root_temp_says_so_even_with_pc_tidy_on_that_drive(fake):

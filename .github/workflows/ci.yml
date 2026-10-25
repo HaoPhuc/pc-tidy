@@ -44,6 +44,44 @@ jobs:
           Import-Module Pester -MinimumVersion 5.5.0
           Invoke-Pester tests\ps -CI
 
+  exe:
+    name: pc-tidy.exe (build, test, release on a v* tag)
+    runs-on: windows-latest
+    permissions:
+      contents: write        # only used to publish a release from a v* tag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        # a venv with PyInstaller alone, so no third-party package can end up inside the exe
+        shell: powershell
+        run: |
+          python -m venv build-venv
+          build-venv\Scripts\python.exe -m pip install --disable-pip-version-check -r packaging\requirements-build.txt
+          build-venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\pc-tidy.spec
+          $hash = (Get-FileHash dist\pc-tidy.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  pc-tidy.exe" | Out-File -Encoding ascii dist\pc-tidy.exe.sha256
+          Get-Content dist\pc-tidy.exe.sha256
+      - name: Test the exe
+        env:
+          PCTIDY_EXE: dist\pc-tidy.exe
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q tests/test_exe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pc-tidy-exe
+          path: |
+            dist/pc-tidy.exe
+            dist/pc-tidy.exe.sha256
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/pc-tidy.exe dist/pc-tidy.exe.sha256 --title "pc-tidy ${{ github.ref_name }}" --generate-notes
+
   setup:
     name: setup.cmd on a clean runner (twice)
     runs-on: windows-latest

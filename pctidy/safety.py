@@ -4,7 +4,8 @@ It refuses:
 1. drive roots, the Users folder and every folder directly in it (the profiles, Public included),
    and the Known Folders themselves (Desktop, Documents, Downloads, Music, Pictures, Videos, OneDrive*)
 2. Windows, both Program Files folders, ProgramData, AppData, pc-tidy's own folders, and anything
-   inside them, except exactly the rows of ALLOWED below
+   inside them, except exactly the rows of ALLOWED below; and pc-tidy.exe itself, wherever it was
+   started from, with every folder it is in
 3. a wildcard directly under a drive root, the Users folder, a profile or a Known Folder (D:\\*)
 4. following a junction or symlink while deleting a folder (the executor removes the link itself)
 5. anything outside PCTIDY_SANDBOX_ROOT when the tests set it
@@ -132,8 +133,9 @@ class _Rules:
         for path, label in closed:
             for form in self._keep(self._forms(path)):
                 self.closed.setdefault(form, label)
+        self.exe = self._keep(self._forms(ctx.exe)) if ctx.exe else set()
         self.top = self.users_dir | self.profiles | self.known
-        self.protected = self.top | set(self.closed)
+        self.protected = self.top | set(self.closed) | self.exe
 
     def _forms(self, path):
         out = {norm(path), norm(real(path))}
@@ -167,6 +169,8 @@ class _Rules:
         if p in self.known and op != "sort":
             return (f"{shown} is one of your Windows user folders. pc-tidy works on what's inside it, "
                     "never on the folder itself")
+        if p in self.exe:
+            return f"{shown} is pc-tidy itself"
         if op != "move-to":
             for q in self.protected:
                 if inside(q, p, strict=True) and not (op == "sort" and q in self.known):
@@ -246,15 +250,11 @@ class _Rules:
             t = norm(real(self.ctx.temp))
             name, parent_name = os.path.basename(t), os.path.basename(os.path.dirname(t))
             named_temp = name in ("temp", "tmp") or (name.isdigit() and parent_name in ("temp", "tmp"))
-            if named_temp and not is_root(t) and inside(real(self.ctx.app_dir), t, strict=True):
-                # a real Temp folder with pc-tidy in it, e.g. a ZIP opened in Explorer, which runs it from
-                # Temp: cleaning Temp would delete pc-tidy (TEMP=D:\ with pc-tidy on D: is the case below)
-                self._temp = (f"pc-tidy's own folder ({self.ctx.app_dir}) is inside your Temp folder, so the Temp fix "
-                              "was skipped: cleaning Temp would delete pc-tidy. Move the pc-tidy folder out of Temp, "
-                              "for example to C:\\pc-tidy.")
-                return self._temp
+            # pc-tidy itself may run from a real Temp folder (a ZIP opened in Explorer): the Temp fix
+            # then leaves out only the item that holds it, which the "contains" check refuses
+            own = self._forms(self.ctx.app_dir) | self.exe
             bad = (not named_temp or is_root(t) or t in self.top or t in self.closed
-                   or any(inside(q, t, strict=True) for q in self.protected))
+                   or any(inside(q, t, strict=True) for q in self.protected - own))
             self._temp = (f"Your TEMP variable points at {self.ctx.temp}, which isn't a temp folder. "
                           "The Temp fix was skipped.") if bad else None
         return self._temp

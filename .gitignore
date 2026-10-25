@@ -11,7 +11,13 @@ _logs/
 *.txt
 !requirements.txt
 !requirements-dev.txt
+!packaging/requirements-build.txt
 disk_report*.pdf
+disk_report*.html
+
+# pc-tidy.exe and PyInstaller's working folder (python -m PyInstaller packaging\pc-tidy.spec)
+/build/
+/dist/
 
 # your settings (made from settings.template.ini on first run)
 settings.ini
