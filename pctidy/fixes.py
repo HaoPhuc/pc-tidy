@@ -242,7 +242,8 @@ def measure(fix, ctx, contents=(), patterns=(), files=(), limit=0, min_age_days=
         fix.note = "Some of it is in folders only an administrator can open, so it may free more."
     if m.young:
         fix.note = (fix.note + " " if fix.note else "") + \
-            f"{m.young:,} item{'s' if m.young != 1 else ''} from the last {min_age_days} days stay."
+            (f"1 item from the last {min_age_days} days stays." if m.young == 1
+             else f"{m.young:,} items from the last {min_age_days} days stay.")
     return fix
 
 

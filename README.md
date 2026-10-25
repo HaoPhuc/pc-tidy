@@ -25,8 +25,10 @@ The walkthrough below does the same by hand, and shows each tool on its own.
 
 `pc-tidy.exe` is the guided flow in a single file with Python inside: nothing to install, no setup. Double-click it. On an administrator account Windows asks once for admin rights, so it can clean the Windows folders too, as you; a standard account isn't asked for anyone's password.
 
+It starts with the **quick sweep**: in a few seconds, without scanning the whole drive, it lists the temp files older than 7 days, download caches, shader caches and crash dumps, which all come back by themselves. Type `yes` and they go. This is the one place where pc-tidy picks for you, and only these low-risk ones, after showing every item (`O` opens the whole list). Type `M`, before or after, for more: the full scan, the report and the ranked list with moves, extra copies, old installers and the Recycle Bin. In the folder version, `python pc_tidy.py sweep` starts the same way.
+
 - It has the guided flow, moves, undo (`pc-tidy.exe undo`) and recover. The local AI, sorting Downloads and `cleanup.ps1` are only in the folder version above.
-- Its report is a web page. Its `settings.ini` is in `%LOCALAPPDATA%\pc-tidy`.
+- Its report is a web page, saved in `%LOCALAPPDATA%\pc-tidy\reports` and opened from the menu (*Open the reports folder*), not by itself. Its `settings.ini` is in `%LOCALAPPDATA%\pc-tidy`.
 - It unpacks itself into `%LOCALAPPDATA%\pc-tidy\app` each time it runs, never into Temp, and it never offers itself as a file to delete.
 - It isn't signed yet, so Windows SmartScreen warns before it runs. Signing is planned before the first release ([docs/PLAN-3.md](docs/PLAN-3.md), M14).
 - CI builds it on every push (the `pc-tidy-exe` artifact of a run), and publishes it as a GitHub Release for a `v*` tag. To build it yourself: `python -m pip install -r packaging\requirements-build.txt`, then `python -m PyInstaller --noconfirm --clean packaging\pc-tidy.spec`. It lands in `dist\pc-tidy.exe`.

@@ -168,6 +168,68 @@ def test_moves_go_through_move_off_c_so_its_undo_puts_them_back(run, profile, tm
     assert (lectures / "lecture2.mp4").exists()
 
 
+# ---------- the quick sweep (python pc_tidy.py sweep; what pc-tidy.exe starts with) ----------
+def sweep(run, answers):
+    return run.python("pc_tidy.py", "sweep", input=answers)
+
+
+def sweepable(profile):
+    """Temp files, a pip download and a crash dump (low risk), next to an old installer and a duplicate
+    (not low risk) that the sweep must never touch."""
+    local = profile / "AppData" / "Local"
+    low = temp_files(profile) + [blob(local / "pip" / "cache" / "w.whl", 2), blob(local / "CrashDumps" / "a.dmp", 1)]
+    other = [write(profile / "Downloads" / "big-setup.exe", b"M" * (2 * MB), age_days=30), *duplicates(profile)]
+    return low, other
+
+
+def test_the_sweep_lists_only_low_risk_fixes_and_takes_them_after_yes(run, profile):
+    low, other = sweepable(profile)
+
+    result = sweep(run, "yes\n\n")         # yes, then Enter: no more
+
+    assert result.returncode == 0, result.output
+    assert "QUICK SWEEP: temp files older than 7 days, download caches, shader caches and crash dumps." \
+        in result.stdout
+    assert "FIXES FOR C:" not in result.stdout          # no scan, no ranked list
+    assert not any(f.exists() for f in low)
+    assert all(f.exists() for f in other)
+    assert "Free space on C: went from" in result.stdout
+
+
+@pytest.mark.parametrize("answers", ["no\n", "\n", ""])
+def test_anything_but_yes_or_m_sweeps_nothing(run, profile, answers):
+    low, other = sweepable(profile)
+
+    result = sweep(run, answers)
+
+    assert result.returncode == 0, result.output
+    assert "Nothing was changed." in result.stdout
+    assert all(f.exists() for f in low + other)
+
+
+def test_m_goes_on_to_the_full_list(run, profile):
+    low, other = sweepable(profile)
+
+    result = sweep(run, "m\n\n\n")         # more; then Enter at the ranked list, and at the menu
+
+    assert result.returncode == 0, result.output
+    assert "FIXES FOR C:, LOWEST RISK FIRST" in result.stdout
+    assert "Extra copies of files in Downloads, Desktop or Sorted" in result.stdout
+    assert all(f.exists() for f in low + other)
+
+
+def test_after_the_sweep_m_goes_on_to_the_full_list(run, profile):
+    low, other = sweepable(profile)
+
+    result = sweep(run, "yes\nm\n\n\n")
+
+    assert result.returncode == 0, result.output
+    assert not any(f.exists() for f in low)
+    after = result.stdout[result.stdout.index("DONE"):]
+    assert "FIXES FOR C:, LOWEST RISK FIRST" in after
+    assert all(f.exists() for f in other)
+
+
 # ---------- in this process ----------
 ROWS = [{"id": "temp-user", "risk": "Low"}, {"id": "caches", "risk": "Low"},
         {"id": "installers", "risk": "Medium"}, {"id": "windows-temp", "risk": "Low"}]
