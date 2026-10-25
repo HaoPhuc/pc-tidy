@@ -12,7 +12,8 @@ It refuses:
 6. a drive root, the Users folder, a profile or anything from item 2 as the folder to sort
 
 Operations: "delete", "move" (the item moved), "move-to" (where it goes), "rmdir" (an empty folder
-pc-tidy made), "sort" (tidy_folder.py --source).
+pc-tidy made), "sort" (tidy_folder.py --source), "self" (removing pc-tidy itself: only its data
+folder and pc-tidy.exe are allowed, nothing else at all; see pctidy/remove.py).
 """
 
 import os
@@ -21,7 +22,7 @@ from collections import namedtuple
 from . import context
 from .paths import has_wildcard, inside, is_root, match, norm, real, real_parent
 
-OPERATIONS = ("delete", "move", "move-to", "rmdir", "sort")
+OPERATIONS = ("delete", "move", "move-to", "rmdir", "sort", "self")
 
 Row = namedtuple("Row", "fix title scope kind patterns")
 
@@ -66,6 +67,8 @@ def why_refused(path, operation, ctx=None):
     if not text:
         return "the path is empty"
     rules = rules_for(ctx)
+    if operation == "self":
+        return rules.self_problem(text)
     if has_wildcard(text):
         if operation != "delete":
             return "wildcards are only allowed in paths to delete"
@@ -173,7 +176,8 @@ class _Rules:
             return f"{shown} is pc-tidy itself"
         if op != "move-to":
             for q in self.protected:
-                if inside(q, p, strict=True) and not (op == "sort" and q in self.known):
+                # sorting a folder pc-tidy.exe is in is fine: moving the exe itself is refused, file by file
+                if inside(q, p, strict=True) and not (op == "sort" and (q in self.known or q in self.exe)):
                     return f"{shown} contains {self._name(q)}"
         for q, label in self.closed.items():
             if inside(p, q):
@@ -181,6 +185,20 @@ class _Rules:
                     return None
                 return f"{shown} is inside {label}, which pc-tidy doesn't change"
         return None
+
+    def self_problem(self, text):
+        """Removing pc-tidy itself: the data folder (and what is in it) and pc-tidy.exe, nothing else.
+        Links are resolved, so a link inside the data folder can't lead out of it."""
+        if has_wildcard(text):
+            return "wildcards aren't allowed here"
+        p, resolved = norm(text), norm(real(text))
+        shown = self._name(p, text)
+        if self.sandbox and not any(inside(p, s) for s in self.sandbox):
+            return f"{shown} is outside the test folders (PCTIDY_SANDBOX_ROOT)"
+        data = self._forms(self.ctx.data_dir)
+        if all(any(inside(form, d) for d in data) or form in self.exe for form in (p, resolved)):
+            return None
+        return f"{shown} isn't pc-tidy's own: only its data folder and pc-tidy.exe are removed"
 
     def row_for(self, p):
         """The ALLOWED row that matches a concrete, normalised path."""

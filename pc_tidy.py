@@ -28,7 +28,8 @@ import subprocess
 import sys
 import time
 
-from pctidy import cleanup, context, errors, guided, journal, lock, recovery, safety, settings, settings_import, ui
+from pctidy import (cleanup, context, errors, guided, journal, lock, recovery, remove, safety, settings,
+                    settings_import, ui)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
@@ -353,9 +354,23 @@ def main():
     return guided.run(no_llm=args.no_llm, no_open=args.no_open, sweep=True if args.command == "sweep" else None)
 
 
+def end_of_exe(code):
+    """pc-tidy.exe double-clicked, at its end: offer to remove pc-tidy from this PC (after a run that
+    ended normally only; after an error its log may be needed), then wait for Enter, since its window
+    closes when it ends (pc-tidy.cmd has pause for this). The exe itself goes after that."""
+    leave = None
+    if code in (0, 3):
+        try:
+            leave = remove.offer()
+        except Exception as e:      # never let the offer break the end of a run
+            print(f"pc-tidy stays: it couldn't remove itself ({errors.explain(e)})")
+    ui.ask("\nPress Enter to close.")
+    if leave:
+        leave()
+
+
 if __name__ == "__main__":
     code = errors.run(main, "pc_tidy.py")
     if context.FROZEN and len(sys.argv) == 1:
-        # pc-tidy.exe double-clicked: its window closes when it ends (pc-tidy.cmd has pause for this)
-        ui.ask("\nPress Enter to close.")
+        end_of_exe(code)
     sys.exit(code)

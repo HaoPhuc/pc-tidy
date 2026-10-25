@@ -283,6 +283,26 @@ def test_pc_tidy_in_temp_leaves_out_only_the_item_that_holds_it(fake, tmp_path):
     assert safety.why_refused(temp + "\\setup-leftovers", "delete", ctx) is None
 
 
+def test_removing_pc_tidy_touches_only_its_data_folder_and_the_exe(fake, tmp_path):
+    data = f"{tmp_path}\\{LOCAL}\\pc-tidy".replace("/", "\\")
+    exe = f"{tmp_path}\\{ME}\\Downloads\\pc-tidy.exe".replace("/", "\\")
+    ctx = context_for(fake, sandbox=True, PCTIDY_TEST_EXE=exe)
+    for ok in (data, data + "\\reports\\disk_report-1.html", data + "\\app", exe):
+        assert safety.why_refused(ok, "self", ctx) is None, ok
+    for refused in (f"{tmp_path}\\{ME}\\Downloads", f"{tmp_path}\\{ME}\\Downloads\\setup.exe", f"{tmp_path}\\{LOCAL}",
+                    f"{tmp_path}\\{LOCAL}\\pc-tidy-other", data + "\\*", f"{tmp_path}\\{ME}\\Documents\\thesis.docx"):
+        assert safety.why_refused(refused.replace("/", "\\"), "self", ctx), refused
+
+
+def test_a_link_in_the_data_folder_cant_lead_removal_out_of_it(fake, tmp_path):
+    from support import make_junction
+    data = tmp_path / "Users" / "me" / "AppData" / "Local" / "pc-tidy"
+    data.mkdir(parents=True)
+    make_junction(data / "reports", tmp_path / "Users" / "me" / "Documents")
+    ctx = context_for(fake, sandbox=True)
+    assert safety.why_refused(str(data / "reports" / "thesis.docx"), "self", ctx)
+
+
 def test_pc_tidy_exe_is_never_touched_and_neither_is_its_folder(fake, tmp_path):
     temp = f"{tmp_path}\\{LOCAL}\\Temp".replace("/", "\\")
     exe = temp + "\\Temp1_pc-tidy.zip\\pc-tidy.exe"
