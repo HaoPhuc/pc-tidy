@@ -4,7 +4,8 @@ CI runs every test on windows-latest, which is a Windows Server image. It runs a
 
 ## pc-tidy.exe
 - [ ] Download `pc-tidy.exe` from a CI run or a release and double-click it. On an administrator account Windows asks once; the window then cleans the Windows rows too. On a standard account nothing asks for a password, and the Windows rows say why they are left out.
-- [ ] A fix, then the menu, then Enter: the window waits for "Press Enter to close" before it closes.
+- [ ] It starts with the quick sweep within a few seconds, listing only temp files older than 7 days, caches and crash dumps. `yes` frees them; `M` then scans and shows the ranked list.
+- [ ] After the sweep or the menu, the window waits for "Press Enter to close" before it closes.
 - [ ] Open it from inside a ZIP in Explorer (Windows runs it from Temp): the Temp fix runs, leaving out only the folder it is in.
 - [ ] While it runs, `%LOCALAPPDATA%\pc-tidy\app` holds its unpacked files, and Temp holds none of them.
 

@@ -53,21 +53,31 @@ def test_selftest_needs_no_packages(run):
     assert "Double-click pc-tidy.exe to start." in result.stdout
 
 
-def test_the_guided_flow_frees_space_and_saves_a_web_page(run, profile, tmp_path):
+def test_it_starts_with_the_quick_sweep(run, profile, tmp_path):
     temp = profile / "AppData" / "Local" / "Temp"
     files = [write(temp / f"cache{i}.tmp", b"c" * MB, age_days=10) for i in range(3)]
 
-    result = run_exe(run, input="1\nyes\n\n\n")      # fix 1, yes, close the menu, close the window
+    result = run_exe(run, input="yes\n\n\n")      # yes, no more, close the window
 
     assert result.returncode == 0, result.output
+    assert "QUICK SWEEP: temp files older than 7 days" in result.stdout
     assert "Your Temp files older than 7 days: freed 3 MB" in result.stdout
+    assert "FIXES FOR C:" not in result.stdout              # no scan unless you ask for more
     assert not any(f.exists() for f in files)
+    assert "Press Enter to close." in result.stdout
+    assert (tmp_path / "settings.ini").exists()
+
+
+def test_more_scans_and_saves_a_web_page_without_opening_it(run, profile):
+    result = run_exe(run, input="m\n\n\n\n")      # more, nothing picked, close the menu, close the window
+
+    assert result.returncode == 0, result.output
+    assert "FIXES FOR C:, LOWEST RISK FIRST" in result.stdout
     reports = list((profile / "AppData" / "Local" / "pc-tidy" / "reports").glob("disk_report-*.html"))
     assert len(reports) == 1
     assert "Fixes for C:" in reports[0].read_text(encoding="utf-8")
+    assert "Open it any time from the menu: Open the reports folder." in result.stdout
     assert "Sort your Downloads" not in result.stdout       # sorting and its AI aren't in the exe
-    assert "Press Enter to close." in result.stdout
-    assert (tmp_path / "settings.ini").exists()
 
 
 def test_it_unpacks_into_the_data_folder_never_temp(run, profile):

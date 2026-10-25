@@ -183,8 +183,8 @@ def run(dry_run=False, ctx=None):
         return 0
 
     dry = guided.DryRun(ctx, cfg, doable)
-    empty = [r["title"] + (f" ({dry.young[r['id']]:,} newer item{'s' if dry.young[r['id']] != 1 else ''} stay)"
-                           if dry.young[r["id"]] else "") for r in dry.rows if not dry.by_fix.get(r["id"])]
+    empty = [r["title"] + (f" ({guided.newer_stay(dry.young[r['id']])})" if dry.young[r["id"]] else "")
+             for r in dry.rows if not dry.by_fix.get(r["id"])]
     if empty:
         print(f"Nothing to remove in: {', '.join(empty)}.")
     if dry.empty:

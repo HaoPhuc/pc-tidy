@@ -1,5 +1,9 @@
 r"""The guided flow: what `python pc_tidy.py` (or a double-click on pc-tidy.cmd) does.
 
+pc-tidy.exe (and `python pc_tidy.py sweep`) starts with the quick sweep instead: after the checks,
+the low-risk fixes only, measured in their own folders in seconds, as one list and one yes. M there
+goes on to the scan, the report and the ranked list below.
+
     1. checks: settings, notices from unattended runs, interrupted runs, admin rights, free space
     2. a scan of C: (it only reads)
     3. the report, saved in %LOCALAPPDATA%\pc-tidy\reports, and the ranked fixes for C:
@@ -62,18 +66,25 @@ recover (check an interrupted run), status, settings edit, or --help for all of 
 """)
 
 
-def run(no_llm=False, no_open=False):
+def run(no_llm=False, no_open=False, sweep=None):
     """The whole flow. Returns the exit code: 0 if everything picked was done, 3 if something was
-    skipped, 1 on an error, 4 if another pc-tidy run kept the lock."""
+    skipped, 1 on an error, 4 if another pc-tidy run kept the lock. With sweep (what pc-tidy.exe
+    does, and python pc_tidy.py sweep), the quick sweep comes first, and the rest only if you ask."""
     ctx = context.current()
     no_llm = no_llm or context.FROZEN       # pc-tidy.exe never asks the local AI, even if Ollama runs
+    sweep = context.FROZEN if sweep is None else sweep
     try:
         cfg = settings.load(ctx, create=True)
         code = checks(ctx, cfg)
         if code is not None:
             return code
-        data = show_report(ctx, cfg, no_llm, no_open)
-        code = free_space(ctx, settings.load(ctx), data)
+        swept = 0
+        if sweep:
+            swept, more = quick_sweep(ctx, cfg)
+            if not more:
+                return swept
+        data = show_report(ctx, settings.load(ctx), no_llm, no_open)
+        code = free_space(ctx, settings.load(ctx), data) or swept
         menu(ctx, no_llm, no_open)
         return code
     except KeyboardInterrupt:
@@ -119,6 +130,59 @@ def checks(ctx, cfg):
     return None
 
 
+# ---------- the quick sweep ----------
+SWEEP_WHAT = "temp files older than {days} days, download caches, shader caches and crash dumps"
+MORE = "M for more (moves to another drive, extra copies, old installers, the Recycle Bin)"
+
+
+def quick_sweep(ctx, cfg):
+    """The low-risk fixes only, measured in their own folders: no scan of C:, no hashing, so it takes
+    seconds. One list, one yes. This is the one place where fixes come picked for you: only low risk
+    ones, which come back by themselves, and only after you have seen every item. Returns (exit
+    code, whether you asked for more)."""
+    from . import fixes
+    notes = []
+    rows = [f.as_dict() for f in fixes.table_fixes(ctx, cfg, notes) if f]
+    avail = availability(ctx, cfg, rows)
+    for row in rows:
+        if avail[row["id"]] and (row["bytes"] or row["state"] == "admin"):
+            print(f"Not in this sweep: {row['title']} ({avail[row['id']]}).")
+    for note in notes:
+        print(note)
+    dry = DryRun(ctx, cfg, [r for r in rows if avail[r["id"]] is None])
+    dry.rows = [dict(r, n=n) for n, r in enumerate([r for r in dry.rows if dry.by_fix.get(r["id"])], 1)]
+    what = SWEEP_WHAT.format(days=cfg.value("cleanup", "temp_min_age_days"))
+    if dry.empty:
+        print(f"\nQUICK SWEEP: there is nothing to sweep: no {what}.")
+        return 0, _wants_more()
+    listing = show_dry_run(dry, f"\nQUICK SWEEP: {what}. They come back by themselves.\n"
+                                "This is exactly what goes. Nothing has changed yet.")
+    while True:
+        answer = ui.ask(f"\nType yes to sweep them away, O to see the full list, {MORE}, or press Enter to stop: ")
+        choice = (answer or "").strip().lower()
+        if choice == "o":
+            _show_listing(ctx, listing)
+            continue
+        if choice == "m":
+            return 0, True
+        if choice != "yes":
+            print("Nothing was changed.")
+            return 0, False
+        return execute(ctx, dry), _wants_more()
+
+
+def _wants_more():
+    answer = ui.ask(f"\nType {MORE}, or press Enter to stop: ")
+    return (answer or "").strip().lower() == "m"
+
+
+def _show_listing(ctx, listing):
+    """O at a yes question: the full list in Notepad, or where it is."""
+    if listing and not ctx.sandbox:
+        subprocess.Popen(["notepad.exe", listing])
+    print(f"The list is in {listing}." if listing else "The list couldn't be saved; it is above.")
+
+
 # ---------- 2-3. scan and report ----------
 def show_report(ctx, cfg, no_llm=False, no_open=False):
     import disk_report
@@ -129,7 +193,9 @@ def show_report(ctx, cfg, no_llm=False, no_open=False):
     print("\n".join(fix_list(data["fixes"], availability(ctx, cfg, data["fixes"]["rows"]))))
     if path:
         print(f"\nThe whole report is in {path}")
-        if not no_open and not ctx.sandbox and hasattr(os, "startfile"):
+        if context.FROZEN:      # offered, not opened: a browser popping up mid-flow hides this window
+            print("Open it any time from the menu: Open the reports folder.")
+        elif not no_open and not ctx.sandbox and hasattr(os, "startfile"):
             os.startfile(path)
     return data
 
@@ -368,7 +434,7 @@ class DryRun:
         acts = self.by_fix.get(row["id"], [])
         head = f"  {row['n']:>2}  {row['title']}"
         young = self.young.get(row["id"])
-        stay = [f"        ({young:,} newer item{'s' if young != 1 else ''} stay)"] if young else []
+        stay = [f"        ({newer_stay(young)})"] if young else []
         if not acts:
             return [f"{head}: nothing to do any more"] + stay
         a = acts[0]
@@ -417,6 +483,11 @@ class DryRun:
         except OSError:
             return None
         return path
+
+
+def newer_stay(n):
+    """'1 newer item stays', '12 newer items stay': what the Temp fixes' age floor leaves."""
+    return f"{n:,} newer item stays" if n == 1 else f"{n:,} newer items stay"
 
 
 def plan_settings(cfg):
@@ -509,9 +580,7 @@ def confirm(ctx, listing):
         answer = ui.ask("\nType yes to do all of this, O to see the full list, or press Enter to cancel: ")
         choice = (answer or "").strip().lower()
         if choice == "o":
-            if listing and not ctx.sandbox:
-                subprocess.Popen(["notepad.exe", listing])
-            print(f"The list is in {listing}." if listing else "The list couldn't be saved; it is above.")
+            _show_listing(ctx, listing)
             continue
         return choice == "yes"
 

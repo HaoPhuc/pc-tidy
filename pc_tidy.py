@@ -1,11 +1,13 @@
 r"""
 pc_tidy.py - see what fills C: and free space on it, safely. With no command it guides you: a scan of C:,
 the report with the fixes for C: ranked lowest risk first, the fixes you pick, the exact list (the dry
-run), your yes, and a summary. Double-clicking pc-tidy.cmd does the same.
+run), your yes, and a summary. Double-clicking pc-tidy.cmd does the same. pc-tidy.exe starts with the
+quick sweep instead (the sweep command here).
 
 Usage:
     python pc_tidy.py                    # the guided flow
     python pc_tidy.py --no-llm --no-open # ... without the local AI, and without opening the PDF
+    python pc_tidy.py sweep              # the quick sweep first, as pc-tidy.exe does
     python pc_tidy.py recover            # check runs that were interrupted, and decide about half-done moves
     python pc_tidy.py undo               # put the last moves off C: back
     python pc_tidy.py status             # what unattended runs couldn't do, and anything left unfinished
@@ -308,6 +310,8 @@ def main():
     ap.add_argument("--no-llm", action="store_true", help="the guided flow without the local AI")
     ap.add_argument("--no-open", action="store_true", help="the guided flow without opening the PDF report")
     sub = ap.add_subparsers(dest="command")
+    sub.add_parser("sweep", help="the quick sweep first: the low-risk fixes as one list and one yes, in seconds "
+                                 "(what pc-tidy.exe does); M there goes on to the full scan")
     sub.add_parser("recover", help="check interrupted runs, and decide about half-done moves")
     sub.add_parser("undo", help="put the last moves off C: back (what python move_off_c.py --undo does)")
     st = sub.add_parser("status", help="notices from unattended runs, and unfinished work")
@@ -346,7 +350,7 @@ def main():
             return settings_import_old(ctx, args.folder)
         se.print_help()
         return 0
-    return guided.run(no_llm=args.no_llm, no_open=args.no_open)
+    return guided.run(no_llm=args.no_llm, no_open=args.no_open, sweep=True if args.command == "sweep" else None)
 
 
 if __name__ == "__main__":
