@@ -2,11 +2,17 @@
 
 CI runs every test on windows-latest, which is a Windows Server image. It runs as administrator, and has no UAC prompt, no OneDrive and no USB disks. These checks need a real PC, so do them by hand on **Windows 10 22H2** and **Windows 11** before a release. Tick each one, and write down what differed.
 
+## pc-tidy.exe
+- [ ] Download `pc-tidy.exe` from a CI run or a release and double-click it. On an administrator account Windows asks once; the window then cleans the Windows rows too. On a standard account nothing asks for a password, and the Windows rows say why they are left out.
+- [ ] A fix, then the menu, then Enter: the window waits for "Press Enter to close" before it closes.
+- [ ] Open it from inside a ZIP in Explorer (Windows runs it from Temp): the Temp fix runs, leaving out only the folder it is in.
+- [ ] While it runs, `%LOCALAPPDATA%\pc-tidy\app` holds its unpacked files, and Temp holds none of them.
+
 ## Setup
 - [ ] Download the ZIP, *Extract All* to `C:\pc-tidy`, and double-click `setup.cmd`. It ends with "pc-tidy is ready". Running it again changes nothing.
 - [ ] On a PC without Python, `setup.cmd` opens python.org and says to tick "Add python.exe to PATH".
 - [ ] With only the Microsoft Store's `python.exe` placeholder on the PC, setup doesn't use it.
-- [ ] Run `pc-tidy.cmd` straight from inside the ZIP (Windows runs it from Temp). The self-test or the fixes say that pc-tidy's folder is inside Temp, and the Temp fix is left out.
+- [ ] Run `pc-tidy.cmd` straight from inside the ZIP (Windows runs it from Temp). The Temp fix leaves out only the folder pc-tidy is in, and says so; the rest of Temp is offered.
 - [ ] With the pc-tidy folder inside OneDrive, setup warns before going on.
 
 ## Windows rights

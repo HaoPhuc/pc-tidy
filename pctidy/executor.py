@@ -25,7 +25,7 @@ import subprocess
 import time
 from collections import namedtuple
 
-from . import _win, journal, safety, volume
+from . import _win, context, journal, safety, volume
 from .lock import Lock
 from .paths import inside, lp
 from .plan import (PLAN_VALID_HOURS, computer_name, fingerprint, is_dir_stat, is_link, settings_hash,
@@ -39,7 +39,7 @@ CHUNK = 1024 * 1024
 UNDOABLE = ("move", "rmdir")
 TOO_FULL = ("{drive} is too full to record the move safely. Clear some low-risk items first "
             "(they're at the top of the list).")
-WAITING = "waiting for your decision on an interrupted move (run: python pc_tidy.py recover)"
+WAITING = f"waiting for your decision on an interrupted move (run: {context.command('recover')})"
 
 Tool = namedtuple("Tool", "label command interactive timeout measure")
 
@@ -413,7 +413,7 @@ class _Runner:
             self.result.stuck.append(a)
             self.blocked += [src, dst]
             raise Stuck(f"the copy is complete, but part of the original couldn't be deleted ({_reason(error)}). "
-                       "Close what is using it, then run: python pc_tidy.py recover")
+                       f"Close what is using it, then run: {context.command('recover')}")
         self._crash_hook()
         return copied
 

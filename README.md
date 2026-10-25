@@ -21,6 +21,16 @@ Made for Windows 10 and 11.
 
 The walkthrough below does the same by hand, and shows each tool on its own.
 
+### pc-tidy.exe: one file, no Python
+
+`pc-tidy.exe` is the guided flow in a single file with Python inside: nothing to install, no setup. Double-click it. On an administrator account Windows asks once for admin rights, so it can clean the Windows folders too, as you; a standard account isn't asked for anyone's password.
+
+- It has the guided flow, moves, undo (`pc-tidy.exe undo`) and recover. The local AI, sorting Downloads and `cleanup.ps1` are only in the folder version above.
+- Its report is a web page. Its `settings.ini` is in `%LOCALAPPDATA%\pc-tidy`.
+- It unpacks itself into `%LOCALAPPDATA%\pc-tidy\app` each time it runs, never into Temp, and it never offers itself as a file to delete.
+- It isn't signed yet, so Windows SmartScreen warns before it runs. Signing is planned before the first release ([docs/PLAN-3.md](docs/PLAN-3.md), M14).
+- CI builds it on every push (the `pc-tidy-exe` artifact of a run), and publishes it as a GitHub Release for a `v*` tag. To build it yourself: `python -m pip install -r packaging\requirements-build.txt`, then `python -m PyInstaller --noconfirm --clean packaging\pc-tidy.spec`. It lands in `dist\pc-tidy.exe`.
+
 ---
 
 ## Walkthrough
@@ -312,7 +322,7 @@ It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of
 | `... stopped: ...` | The line says what happened and what to do. The details are in `%LOCALAPPDATA%\pc-tidy\logs\pc-tidy.log`; add `--debug` to the command to see them on screen. |
 | `a part it needs isn't installed` or `No module named 'reportlab'` | Double-click `setup.cmd` again, or run `pip install -r requirements.txt`. |
 | `Python 3.9 or newer ... none was found` | Install Python from python.org with "Add python.exe to PATH" ticked, then double-click `setup.cmd`. |
-| `pc-tidy's own folder ... is inside your Temp folder` | Move the pc-tidy folder out of Temp (for example to `C:\pc-tidy`). It happens when it runs straight from a ZIP. |
+| `Left out ...\Temp\...: ... contains ...pc-tidy` | Nothing to fix: pc-tidy runs from inside your Temp folder (straight from a ZIP), so the Temp fix leaves that one folder alone and cleans the rest. To have it cleaned too, run pc-tidy from somewhere else, for example `C:\pc-tidy`. |
 | `The report is saved to ...\reports instead of here` | Nothing to fix: the folder you are in is synced by OneDrive or is part of Windows, so the report went to pc-tidy's own folder. |
 | A check in `python pc_tidy.py selftest` says FAIL | It says what to fix. Run the self-test again afterwards. |
 | `Ollama isn't running` | Start Ollama from the Start menu. The scripts still work without it, just without the AI parts. |

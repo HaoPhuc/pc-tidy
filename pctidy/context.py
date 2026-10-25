@@ -10,11 +10,27 @@ settings.ini is the one in the first of those folders, so a test never reads or 
 
 import ctypes
 import os
+import sys
 import uuid
 
 from .paths import inside, norm
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# pc-tidy.exe (built by packaging/pc-tidy.spec): one file with Python inside, unpacked to a folder of
+# its own each time it runs. There are no scripts to start then, and settings.ini lives in the data
+# folder, since the unpacked folder is gone when it ends.
+FROZEN = bool(getattr(sys, "frozen", False))
+EXE_NAME = "pc-tidy.exe"
+
+
+def command(args):
+    """How to run a pc-tidy command in this edition: 'python pc_tidy.py recover' or 'pc-tidy.exe recover'."""
+    return f"{EXE_NAME} {args}" if FROZEN else f"python pc_tidy.py {args}"
+
+
+def undo_command():
+    """How to put the last moves back: move_off_c.py's --undo, or the exe's undo command."""
+    return command("undo") if FROZEN else "python move_off_c.py --undo"
 DEST_FOLDER_NAME = "From-C"          # move_off_c.py's default destination: <other drive>:\From-C
 VOLUME_JOURNAL_FOLDER = "_pc-tidy"   # journals kept on the destination volume when C: is full
 
@@ -66,8 +82,14 @@ class Context:
         self.legacy_move_logs = os.path.join(self.profile, ".pc-tidy", "move_logs")
         roots = get("PCTIDY_SANDBOX_ROOT", default="")
         self.sandbox = [os.path.abspath(r) for r in roots.split(os.pathsep) if r.strip()]
-        # found through pc-tidy's own folder, so an admin window that starts in System32 finds it too
-        self.settings_file = os.path.join(self.sandbox[0] if self.sandbox else APP_DIR, "settings.ini")
+        # found through pc-tidy's own folder, so an admin window that starts in System32 finds it too;
+        # pc-tidy.exe keeps it in the data folder
+        home = self.data_dir if FROZEN else APP_DIR
+        self.settings_file = os.path.join(self.sandbox[0] if self.sandbox else home, "settings.ini")
+        # pc-tidy.exe itself, wherever it was started from (Downloads, or Temp when opened from a ZIP):
+        # no fix may touch it. PCTIDY_TEST_EXE stands in for it in the tests.
+        exe = sys.executable if FROZEN else self.test_value("PCTIDY_TEST_EXE")
+        self.exe = os.path.abspath(exe) if exe else None
         self._known = None
 
     # ---------- places ----------

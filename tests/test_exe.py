@@ -1,0 +1,90 @@
+"""pc-tidy.exe, the one-file build (packaging/pc-tidy.spec), run on the fake profile.
+
+These run only when PCTIDY_EXE names a built exe. CI builds it and runs them; on your own PC:
+    python -m PyInstaller --noconfirm --clean packaging\\pc-tidy.spec
+    set PCTIDY_EXE=dist\\pc-tidy.exe
+    python -m pytest tests\\test_exe.py
+
+The exe is frozen Python, so the write guard (tests/guard) can't reach inside it. pc-tidy's own
+sandbox (PCTIDY_SANDBOX_ROOT) still refuses anything outside the test's folders.
+"""
+
+import os
+import shutil
+import subprocess
+
+import pytest
+
+from support import age, write
+
+EXE = os.environ.get("PCTIDY_EXE")
+pytestmark = pytest.mark.skipif(not EXE, reason="PCTIDY_EXE isn't set: build pc-tidy.exe first (see this file)")
+MB = 1024 ** 2
+
+
+def run_exe(run, *args, input=None, exe=None):
+    env = run.command_env()
+    # highestAvailable would ask for a UAC prompt in a normal window of an administrator account;
+    # RunAsInvoker starts it as this window is (CI's window is elevated anyway)
+    env["__COMPAT_LAYER"] = "RunAsInvoker"
+    result = subprocess.run([exe or os.path.abspath(EXE), *map(str, args)], cwd=str(run.work), env=env, input=input,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    result.output = result.stdout + result.stderr
+    return result
+
+
+def test_it_asks_for_the_highest_rights_the_account_has():
+    """An administrator account gets one UAC prompt and runs as itself; a standard account isn't asked."""
+    with open(EXE, "rb") as f:
+        data = f.read()
+    assert b'requestedExecutionLevel level="highestAvailable"' in data
+
+
+def test_help(run):
+    result = run_exe(run, "--help")
+    assert result.returncode == 0, result.output
+    assert "usage:" in result.stdout and "undo" in result.stdout
+
+
+def test_selftest_needs_no_packages(run):
+    result = run_exe(run, "selftest")
+    assert result.returncode == 0, result.output
+    assert "none needed: pc-tidy.exe saves its report as a web page" in result.stdout
+    assert "Double-click pc-tidy.exe to start." in result.stdout
+
+
+def test_the_guided_flow_frees_space_and_saves_a_web_page(run, profile, tmp_path):
+    temp = profile / "AppData" / "Local" / "Temp"
+    files = [write(temp / f"cache{i}.tmp", b"c" * MB, age_days=10) for i in range(3)]
+
+    result = run_exe(run, input="1\nyes\n\n\n")      # fix 1, yes, close the menu, close the window
+
+    assert result.returncode == 0, result.output
+    assert "Your Temp files older than 7 days: freed 3 MB" in result.stdout
+    assert not any(f.exists() for f in files)
+    reports = list((profile / "AppData" / "Local" / "pc-tidy" / "reports").glob("disk_report-*.html"))
+    assert len(reports) == 1
+    assert "Fixes for C:" in reports[0].read_text(encoding="utf-8")
+    assert "Sort your Downloads" not in result.stdout       # sorting and its AI aren't in the exe
+    assert "Press Enter to close." in result.stdout
+    assert (tmp_path / "settings.ini").exists()
+
+
+def test_it_unpacks_into_the_data_folder_never_temp(run, profile):
+    result = run_exe(run, "status")
+
+    assert result.returncode == 0, result.output
+    assert (profile / "AppData" / "Local" / "pc-tidy" / "app").is_dir()
+    assert not [p for p in (profile / "AppData" / "Local" / "Temp").iterdir() if p.name.startswith("_MEI")]
+
+
+def test_its_own_file_in_downloads_is_never_offered(run, profile):
+    """Downloaded more than installers_min_age_days ago, pc-tidy.exe is an old .exe in Downloads."""
+    own = shutil.copy2(EXE, profile / "Downloads" / "pc-tidy.exe")
+    age(own, 30)
+
+    result = run_exe(run, input="", exe=str(own))
+
+    assert result.returncode == 0, result.output
+    assert "Installers older than" not in result.stdout, result.output
+    assert os.path.exists(own)

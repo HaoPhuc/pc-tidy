@@ -24,6 +24,25 @@ def test_text_report_has_every_section(tmp_path):
     assert "Text report saved to" in result.stdout
 
 
+def test_without_reportlab_the_guided_flow_saves_a_web_page(profile, monkeypatch, capsys):
+    """pc-tidy.exe has no reportlab, and neither may a source install: the report is then one web page."""
+    import sys
+
+    import disk_report
+    from pctidy import context, guided, settings
+    monkeypatch.setitem(sys.modules, "pdf_report", None)          # import pdf_report now fails
+    ctx = context.current()
+    data = disk_report.build_report([str(profile)], use_llm=False, opts=disk_report.prepare(settings.load(ctx, create=True)))
+
+    path = guided.save_report(ctx, data, disk_report.render_text(data))
+
+    assert path.endswith(".html") and path.startswith(ctx.folder("reports"))
+    with open(path, encoding="utf-8") as f:
+        page = f.read()
+    assert page.startswith("<!doctype html>") and "<h2>Fixes for C:</h2>" in page and "WHERE THE SPACE GOES" in page
+    assert "so it is saved as a web page" in capsys.readouterr().out
+
+
 def test_the_report_leads_with_the_ranked_fixes(tmp_path):
     home = make_fake_profile(tmp_path / "big", big_cache=True)
     result = Runner(home, tmp_path, [tmp_path]).python(

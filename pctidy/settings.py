@@ -226,13 +226,14 @@ def create_from_template(ctx):
     except OSError:
         return f"{TEMPLATE_NAME} is missing from {context.APP_DIR}, so pc-tidy uses its defaults."
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)       # pc-tidy.exe keeps it in the data folder
         with open(path, "xb") as f:
             f.write(data)
     except FileExistsError:
         return None
     except OSError as e:
         return f"Couldn't create {path} ({e.strerror or e}), so pc-tidy uses the defaults."
-    return f"Made {path} from {TEMPLATE_NAME}. Change it with: python pc_tidy.py settings edit"
+    return f"Made {path} from {TEMPLATE_NAME}. Change it with: {context.command('settings edit')}"
 
 
 def parse(data, ctx=None, name=FILE_NAME, path=None, from_defaults=False):
@@ -910,5 +911,5 @@ def refusal(s, problems, command):
     out = [f"{command} didn't start: {s.name} has {'a mistake' if len(problems) == 1 else 'mistakes'} "
            "in a section it reads."]
     out += [f"  {s.describe(p)}" for p in problems]
-    out.append(f"Fix it with:  python pc_tidy.py settings edit   (the file is {s.path})")
+    out.append(f"Fix it with:  {context.command('settings edit')}   (the file is {s.path})")
     return "\n".join(out)

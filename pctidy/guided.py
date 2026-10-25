@@ -35,31 +35,38 @@ from .progress import Line
 COMMAND = "pc-tidy"
 FULL_C = 256 * 1024 ** 2         # under this much free, C: counts as full
 SHOW_ITEMS = 15                  # items of each fix shown in the dry run; the rest are in the list file
-ADMIN_HINT = "Right-click pc-tidy.cmd > Run as administrator, and pick it there."
+# pc-tidy.exe asks Windows for admin rights itself on an administrator account (its manifest), so
+# only a standard account sees this there
+ADMIN_HINT = ("Ask someone with an administrator account to run pc-tidy.exe." if context.FROZEN
+              else "Right-click pc-tidy.cmd > Run as administrator, and pick it there.")
 
-HELP = r"""
+HELP = rf"""
 pc-tidy shows what fills C: and frees space on it, safely:
 - The report lists the fixes for C:, lowest risk first. Low: it comes back by itself. Medium: it can
   be undone or rebuilt. High: it is gone for good. Each number counts exactly the files the fix removes.
 - Nothing is deleted until you have seen the exact list (the dry run) and typed yes. High-risk fixes
-  ask a second time. Moves can be undone with: python move_off_c.py --undo
+  ask a second time. Moves can be undone with: {context.undo_command()}
 - The local AI only describes and sorts. It never decides what is deleted.
 - Everything stays on this PC. pc-tidy keeps its reports, lists and records in
   %LOCALAPPDATA%\pc-tidy.
-
+""" + (r"""
 The tools on their own (in PowerShell, in the pc-tidy folder):
   python disk_report.py          the report only
   .\cleanup.ps1 -DryRun          the cleanups switched on in settings.ini, as administrator
   python move_off_c.py           move big folders to another drive
   python tidy_folder.py          sort Downloads (preview first, then --apply)
   python pc_tidy.py settings edit
-"""
+""" if not context.FROZEN else """
+pc-tidy.exe also takes a command, in PowerShell: pc-tidy.exe undo (put the last moves back),
+recover (check an interrupted run), status, settings edit, or --help for all of them.
+""")
 
 
 def run(no_llm=False, no_open=False):
     """The whole flow. Returns the exit code: 0 if everything picked was done, 3 if something was
     skipped, 1 on an error, 4 if another pc-tidy run kept the lock."""
     ctx = context.current()
+    no_llm = no_llm or context.FROZEN       # pc-tidy.exe never asks the local AI, even if Ollama runs
     try:
         cfg = settings.load(ctx, create=True)
         code = checks(ctx, cfg)
@@ -70,7 +77,7 @@ def run(no_llm=False, no_open=False):
         menu(ctx, no_llm, no_open)
         return code
     except KeyboardInterrupt:
-        print("\nStopped. Everything pc-tidy did is recorded; run python pc_tidy.py recover to check.")
+        print(f"\nStopped. Everything pc-tidy did is recorded; run {context.command('recover')} to check.")
         return 1
 
 
@@ -91,7 +98,7 @@ def checks(ctx, cfg):
         print("Runs nobody was watching couldn't do everything:")
         for n in notices:
             print(f"  {n.get('time', '')}  {n.get('message', '')}")
-        print("(Clear these with: python pc_tidy.py status --dismiss)\n")
+        print(f"(Clear these with: {context.command('status --dismiss')})\n")
     try:
         recovery.at_start(ctx, "pc_tidy.py", ask=ui.ask)
     except lock.Busy:
@@ -122,14 +129,15 @@ def show_report(ctx, cfg, no_llm=False, no_open=False):
     print("\n".join(fix_list(data["fixes"], availability(ctx, cfg, data["fixes"]["rows"]))))
     if path:
         print(f"\nThe whole report is in {path}")
-        if path.endswith(".pdf") and not no_open and not ctx.sandbox and hasattr(os, "startfile"):
+        if not no_open and not ctx.sandbox and hasattr(os, "startfile"):
             os.startfile(path)
     return data
 
 
 def save_report(ctx, data, text):
     """The report in the reports folder of pc-tidy's data folder (never one OneDrive uploads). A PDF,
-    or text if reportlab is missing. None if it couldn't be saved (C: full), which stops nothing."""
+    or a web page where reportlab isn't there (pc-tidy.exe has no third-party packages). None if it
+    couldn't be saved (C: full), which stops nothing."""
     folder = ctx.folder("reports")
     stem = os.path.join(folder, f"disk_report-{time.strftime('%Y-%m-%d-%H%M%S')}")
     try:
@@ -137,13 +145,14 @@ def save_report(ctx, data, text):
         try:
             import pdf_report
         except ImportError:
-            print("The PDF report needs reportlab (pip install -r requirements.txt), so it is saved as text.")
+            if not context.FROZEN:
+                print("The PDF report needs reportlab (pip install -r requirements.txt), so it is saved as a web page.")
         else:
             pdf_report.render(data, stem + ".pdf")
             return stem + ".pdf"
-        with open(stem + ".txt", "w", encoding="utf-8") as f:
-            f.write(text + "\n")
-        return stem + ".txt"
+        import html_report
+        html_report.render(data, text, stem + ".html")
+        return stem + ".html"
     except OSError as e:
         print(f"Couldn't save the report ({e.strerror or e}). The list of fixes is below.")
         return None
@@ -169,11 +178,11 @@ def availability(ctx, cfg, rows):
         elif ("tool" in a or "count_only" in a) and ctx.sandbox:
             why = "not in the tests"        # they would act on this PC itself
         elif a.get("tool", "").startswith("conda") and not conda:
-            why = "needs conda: open an Anaconda Prompt, go to the pc-tidy folder and run python pc_tidy.py"
+            why = "needs conda: start pc-tidy from an Anaconda Prompt"
         elif row["id"] == "installers" and cfg.key_errors("cleanup", "installer_folders", "installers_min_age_days"):
-            why = "settings.ini has a mistake in [cleanup] (python pc_tidy.py settings check)"
+            why = f"settings.ini has a mistake in [cleanup] ({context.command('settings check')})"
         elif row["id"] in ("temp-user", "temp-windows") and cfg.key_errors("cleanup", "temp_min_age_days"):
-            why = "settings.ini has a mistake in [cleanup] (python pc_tidy.py settings check)"
+            why = f"settings.ini has a mistake in [cleanup] ({context.command('settings check')})"
         out[row["id"]] = why
     return out
 
@@ -372,7 +381,7 @@ class DryRun:
                     f"{gb(m['bytes'])}. This can't be undone."]
         if a["op"] == "move":
             return [f"{head}: move {a['src']}  ->  {a['dst']}, {gb(a['bytes'])}. "
-                    "Undo with: python move_off_c.py --undo"]
+                    f"Undo with: {context.undo_command()}"]
         size = sum(x.get("bytes", 0) for x in acts)
         lines = [f"{head}: delete {len(acts):,} item{'s' if len(acts) != 1 else ''}, {gb(size)}"]
         lines += [f"        {x['path']}" + (f"   (the copy in {os.path.dirname(x['keep'])} stays)" if x.get("keep") else "")
@@ -589,7 +598,7 @@ def summary(dry, outcomes, before, after, drive, records):
         gained = f" ({'+' if after >= before else '-'}{gb(abs(after - before))})"
         print(f"\nFree space on {drive} went from {gb(before)} to {gb(after)}{gained}.")
     if any(o.action["op"] == "move" and o.status == "done" for o in outcomes):
-        print("Undo the moves with: python move_off_c.py --undo")
+        print(f"Undo the moves with: {context.undo_command()}")
     if any(o.action["op"] in ("delete", "delete_tree", "empty_recycle_bin") and o.status == "done" for o in outcomes):
         print("Deleted files can't be put back.")
     for path in records:
@@ -598,49 +607,57 @@ def summary(dry, outcomes, before, after, drive, records):
 
 
 # ---------- the menu ----------
-MENU = """
-What next?
-  1  Free up space on C: again (a new scan and report)
-  2  Sort your Downloads into folders (you see the list first)
-  3  Undo the last move off C:
-  4  Undo the last sort
-  5  Open the reports folder
-  6  Change settings
-  7  Help"""
+MENU = (("again", "Free up space on C: again (a new scan and report)"),
+        ("sort", "Sort your Downloads into folders (you see the list first)"),
+        ("undo-move", "Undo the last move off C:"),
+        ("undo-sort", "Undo the last sort"),
+        ("reports", "Open the reports folder"),
+        ("settings", "Change settings"),
+        ("help", "Help"))
+SORTING = ("sort", "undo-sort")         # tidy_folder.py and its AI: not in pc-tidy.exe
+
+
+def menu_items():
+    return [item for item in MENU if not (context.FROZEN and item[0] in SORTING)]
 
 
 def _script(name, *args, stdin=None):
+    """Run another pc-tidy command in a process of its own. pc-tidy.exe runs itself with the command."""
+    if context.FROZEN:
+        return subprocess.run([sys.executable, *args], stdin=stdin)
     return subprocess.run([sys.executable, os.path.join(context.APP_DIR, name), *args], stdin=stdin)
 
 
 def menu(ctx, no_llm=False, no_open=False):
+    items = menu_items()
     while True:
-        print(MENU)
+        print("\nWhat next?\n" + "\n".join(f"  {n}  {label}" for n, (_key, label) in enumerate(items, 1)))
         answer = ui.ask("Type a number, or press Enter to close: ")
         choice = (answer or "").strip()
         if not choice:
             return
-        if choice == "1":
+        key = items[int(choice) - 1][0] if choice.isdigit() and 1 <= int(choice) <= len(items) else None
+        if key == "again":
             cfg = settings.load(ctx)
             free_space(ctx, cfg, show_report(ctx, cfg, no_llm, no_open))
-        elif choice == "2":
+        elif key == "sort":
             sort_downloads(ctx, no_llm)
-        elif choice == "3":
-            _script("move_off_c.py", "--undo")
-        elif choice == "4":
+        elif key == "undo-move":
+            _script("pc_tidy.py", "undo")
+        elif key == "undo-sort":
             _script("tidy_folder.py", "--undo", stdin=subprocess.DEVNULL)
-        elif choice == "5":
+        elif key == "reports":
             folder = ctx.folder("reports")
             os.makedirs(folder, exist_ok=True)
             print(f"The reports are in {folder}")
             if not ctx.sandbox and hasattr(os, "startfile"):
                 os.startfile(folder)
-        elif choice == "6":
+        elif key == "settings":
             _script("pc_tidy.py", "settings", "edit")
-        elif choice == "7":
+        elif key == "help":
             print(HELP)
         else:
-            print("Type a number from 1 to 7, or press Enter to close.")
+            print(f"Type a number from 1 to {len(items)}, or press Enter to close.")
 
 
 def sort_downloads(ctx, no_llm=False):

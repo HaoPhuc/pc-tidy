@@ -7,8 +7,9 @@ Written 2026-10-25, from reading the code at `bf88129` (M8 merged). Problem 17 w
 | Milestone | State |
 |---|---|
 | M9 One engine that deletes | **Done**, merged in PR #13. Fixes problems 17, 18 and 19. The command is `python pc_tidy.py cleanup [--dry-run]`, which replaces the JSON-only `cleanup-settings`. Tools and the Recycle Bin are tested with stand-ins in-process, and `cleanup.ps1`'s own real run only in CI, which is elevated. |
-| M10 Safer fixes | **Items 1–7 done**, on the same branch. They fix problems 20–26: the Temp age floor (`temp_min_age_days`), pinned and byte-checked kept copies, the other-account check, Node.js only in quiet projects, installers High, and app folders, files in use and the backup note for moves. Item 8, parking on another drive, is not built: it was the planned cut. |
-| M11–M14 | Not started |
+| M10 Safer fixes | **Items 1–7 done**, merged in PR #14. They fix problems 20–26: the Temp age floor (`temp_min_age_days`), pinned and byte-checked kept copies, the other-account check, Node.js only in quiet projects, installers High, and app folders, files in use and the backup note for moves. Item 8, parking on another drive, is not built: it was the planned cut. |
+| M11 One file, no Python | **Done**, on the same branch. PyInstaller 6.22.3 (`packaging/pc-tidy.spec`), 8.8 MB, about 4–5 s to start. Unpacks into `%LOCALAPPDATA%\pc-tidy\app`; the manifest asks for `highestAvailable` (PyInstaller itself only writes `asInvoker` or `requireAdministrator`, so the spec sets it, and `tests/test_exe.py` checks it). The report is HTML wherever reportlab is missing; the source edition keeps its PDF. pc-tidy in Temp now leaves out only the item that holds it. CI builds and tests the exe on every push and publishes it on a `v*` tag. The spike didn't compare Nuitka, and Defender couldn't scan here: false positives are checked in M14 with signing. |
+| M12–M14 | Not started |
 
 **Goal, in order:**
 1. No clean can lose a file you didn't mean to lose, whichever way you start it.
