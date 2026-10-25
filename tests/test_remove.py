@@ -87,6 +87,15 @@ def test_a_different_file_where_pc_tidy_exe_was_stays(profile, exe):
     assert exe.read_bytes() == b"MZ another program, downloaded since"
 
 
+def test_the_cleanup_needs_no_powershell_module():
+    """Started from a PowerShell 7 window, Windows PowerShell can inherit a module path where module
+    cmdlets fail to load: on CI, Get-FileHash returned nothing and the exe stayed. .NET calls only."""
+    script = remove.cleanup_script("C:\\x\\pc-tidy.exe", "AB", ["C:\\x\\app"], [1], log="C:\\x\\log")
+    for cmdlet in ("Get-FileHash", "Remove-Item", "Test-Path", "Wait-Process", "Add-Content", "Get-Date",
+                   "Start-Sleep", "Out-File"):
+        assert cmdlet not in script, cmdlet
+
+
 @pytest.mark.parametrize("answer", [None, "k", "K", "no"])
 def test_anything_but_enter_or_yes_keeps_it(profile, exe, answer, capsys):
     data, own, yours = data_folder(profile)

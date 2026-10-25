@@ -231,22 +231,30 @@ def cleanup_script(exe, sha256, folders, pids, quiet=True, log=None):
     tests' only) gets a line per step."""
     def q(text):
         return "'" + str(text).replace("'", "''") + "'"
+    # .NET only, no cmdlets from modules: started from a PowerShell 7 window, Windows PowerShell can
+    # inherit a module path where Get-FileHash and friends fail to load (seen on CI: an empty hash)
     return "\n".join([
         "$ErrorActionPreference = " + ("'SilentlyContinue'" if quiet else "'Continue'"),
         f"$log = {q(log or '')}",
-        "function Note([string]$text) { if ($log) { Add-Content -LiteralPath $log -Value ((Get-Date -Format 'HH:mm:ss.fff') + ' ' + $text) } }",
+        "function Note([string]$text) { if ($log) { [System.IO.File]::AppendAllText($log, "
+        "[DateTime]::Now.ToString('HH:mm:ss.fff') + ' ' + $text + [Environment]::NewLine) } }",
+        "function Hash([string]$path) { try { $s = [System.IO.File]::OpenRead($path)",
+        "    try { [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($s)).Replace('-', '') }",
+        "    finally { $s.Dispose() } } catch { '' } }",
         "Note 'started'",
-        f"foreach ($id in @({', '.join(str(p) for p in pids)})) {{ Wait-Process -Id $id -Timeout 120; Note \"waited for $id\" }}",
-        "Start-Sleep -Milliseconds 500",
+        f"foreach ($id in @({', '.join(str(p) for p in pids)})) {{",
+        "    try { [void][System.Diagnostics.Process]::GetProcessById($id).WaitForExit(120000) } catch {}",
+        "    Note \"waited for $id\" }",
+        "[System.Threading.Thread]::Sleep(500)",
         f"$exe = {q(exe)}",
-        "$hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash",
+        "$hash = Hash $exe",
         "Note \"hash $hash\"",
-        f"if ((Test-Path -LiteralPath $exe) -and $hash -eq {q(sha256)}) {{",
+        f"if ($hash -eq {q(sha256)}) {{",
         # a virus scanner may hold a new exe for a while: keep trying for a minute
-        "    for ($i = 0; $i -lt 60 -and (Test-Path -LiteralPath $exe); $i++) {",
-        "        try { Remove-Item -LiteralPath $exe -Force -ErrorAction Stop }",
-        "        catch { Note ('not yet: ' + $_.Exception.Message); Start-Sleep -Seconds 1 } } }",
-        "Note ('exe still there: ' + (Test-Path -LiteralPath $exe))",
+        "    for ($i = 0; $i -lt 60 -and [System.IO.File]::Exists($exe); $i++) {",
+        "        try { [System.IO.File]::Delete($exe) }",
+        "        catch { Note ('not yet: ' + $_.Exception.Message); [System.Threading.Thread]::Sleep(1000) } } }",
+        "Note ('exe still there: ' + [System.IO.File]::Exists($exe))",
         # never recursive: a folder goes only if it is empty
         f"foreach ($d in @({', '.join(q(f) for f in folders)})) {{ try {{ [System.IO.Directory]::Delete($d, $false) }} catch {{}} }}",
         "exit 0",
@@ -273,10 +281,12 @@ def remove_exe_after_exit(ctx, wait_for=None):
     # process group (Ctrl+C in pc-tidy's window doesn't reach it), and out of any job pc-tidy.exe's loader
     # keeps its processes in, where Windows allows that, so it outlives the loader
     flags = 0x08000000 | 0x00000200       # CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP
+    # a PowerShell 7 window's module path breaks Windows PowerShell's own modules: let it use its default
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
     for extra in (0x01000000, 0):         # CREATE_BREAKAWAY_FROM_JOB, then without it
         try:
             return subprocess.Popen([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                     "-EncodedCommand", encoded], creationflags=flags | extra, close_fds=True,
+                                     "-EncodedCommand", encoded], creationflags=flags | extra, close_fds=True, env=env,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
             continue
