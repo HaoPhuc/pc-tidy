@@ -1,8 +1,8 @@
-# pc-tidy 3.0: safe on every path, then a one-click broom
+# pc-tidy 2.0, part two: safe on every path, then a one-click broom
 
 ## Status
 
-Written 2026-10-25, from reading the code at `bf88129` (M8 merged). Problem 17 was reproduced on this PC; the others were found by reading the code.
+Written 2026-10-25, from reading the code at `bf88129` (M8 merged). Problem 17 was reproduced on this PC; the others were found by reading the code. This plan and [PLAN.md](PLAN.md) ship together as v2.0.0, the first release with pc-tidy.exe.
 
 | Milestone | State |
 |---|---|

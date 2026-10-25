@@ -75,7 +75,7 @@ build-venv\Scripts\python.exe -m pip install -r packaging\requirements-build.txt
 build-venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\pc-tidy.spec
 ```
 
-It lands in `dist\pc-tidy.exe`. Set `PCTIDY_VERSION` (for example `v3.0.0`) first to put a version in its Properties. Then test it:
+It lands in `dist\pc-tidy.exe`. Set `PCTIDY_VERSION` (for example `v2.0.0`) first to put a version in its Properties. Then test it:
 
 ```powershell
 $env:PCTIDY_EXE = "dist\pc-tidy.exe"

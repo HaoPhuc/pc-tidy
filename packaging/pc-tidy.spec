@@ -34,7 +34,7 @@ winmanifest._set_execution_level = _highest_available
 
 def _version_info():
     """What Properties > Details shows: product, version and author. The version comes from
-    PCTIDY_VERSION (CI sets the v* tag, e.g. v3.0.0), else 0.0.0."""
+    PCTIDY_VERSION (CI sets the v* tag, e.g. v2.0.0), else 0.0.0."""
     from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
                                                      VarFileInfo, VarStruct, VSVersionInfo)
     text = os.environ.get("PCTIDY_VERSION", "0.0.0").lstrip("v")
