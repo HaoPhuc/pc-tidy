@@ -8,6 +8,9 @@ CI runs every test on windows-latest, which is a Windows Server image. It runs a
 - [ ] After the sweep or the menu, the window waits for "Press Enter to close" before it closes.
 - [ ] Open it from inside a ZIP in Explorer (Windows runs it from Temp): the Temp fix runs, leaving out only the folder it is in.
 - [ ] While it runs, `%LOCALAPPDATA%\pc-tidy\app` holds its unpacked files, and Temp holds none of them.
+- [ ] At the end, Enter at "Remove pc-tidy from this PC?", then close the window: within a few seconds pc-tidy.exe is gone from Downloads, the other files there stay, and `%LOCALAPPDATA%\pc-tidy` is gone (or holds only what you put there yourself).
+- [ ] The same after a move to another drive: `<drive>:\From-C\_pc-tidy` holds the record and `READ ME - moved from C.txt` lists the moves. Download pc-tidy.exe again, type M, and *Undo the last move off C:* puts them back.
+- [ ] `K` keeps it, and the next start asks again.
 
 ## Setup
 - [ ] Download the ZIP, *Extract All* to `C:\pc-tidy`, and double-click `setup.cmd`. It ends with "pc-tidy is ready". Running it again changes nothing.

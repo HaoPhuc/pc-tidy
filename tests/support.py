@@ -80,6 +80,16 @@ def age_tree(folder, days):
     return age(folder, days)
 
 
+def wait_gone(path, seconds=60):
+    """True once path is gone: pc-tidy.exe removes itself from a process that waits for it to end."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not os.path.exists(path):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def set_hidden(path):
     attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
     if not ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs | FILE_ATTRIBUTE_HIDDEN):
