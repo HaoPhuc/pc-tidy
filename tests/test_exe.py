@@ -46,6 +46,39 @@ def test_it_asks_for_the_highest_rights_the_account_has():
     assert b'requestedExecutionLevel level="highestAvailable"' in data
 
 
+def test_its_properties_say_what_it_is():
+    """Properties > Details: product, author and the version CI stamped in (PCTIDY_VERSION)."""
+    import ctypes
+    from ctypes import wintypes as w
+    version = ctypes.WinDLL("version")
+    size = version.GetFileVersionInfoSizeW(EXE, None)
+    assert size, "pc-tidy.exe has no version information"
+    buf = ctypes.create_string_buffer(size)
+    assert version.GetFileVersionInfoW(EXE, 0, size, buf)
+
+    def value(name):
+        ptr, length = ctypes.c_void_p(), w.UINT()
+        if not version.VerQueryValueW(buf, f"\\StringFileInfo\\040904B0\\{name}", ctypes.byref(ptr), ctypes.byref(length)):
+            return None
+        return ctypes.wstring_at(ptr, length.value).rstrip("\0")
+
+    assert value("ProductName") == "pc-tidy"
+    assert value("OriginalFilename") == "pc-tidy.exe"
+    assert value("CompanyName") == "Phuc Huynh"
+    wanted = os.environ.get("PCTIDY_VERSION", "").lstrip("v")
+    if wanted:
+        assert value("ProductVersion") == wanted
+
+
+@pytest.mark.skipif(not os.environ.get("PCTIDY_EXPECT_SIGNED"), reason="only a signed release build is checked")
+def test_a_release_is_signed():
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}     # CI's step runs in PowerShell 7
+    status = subprocess.run(["powershell", "-NoProfile", "-Command",
+                             f"(Get-AuthenticodeSignature -LiteralPath '{os.path.abspath(EXE)}').Status"],
+                            capture_output=True, text=True, env=env).stdout.strip()
+    assert status == "Valid"
+
+
 def test_help(run):
     result = run_exe(run, "--help")
     assert result.returncode == 0, result.output

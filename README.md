@@ -1,6 +1,32 @@
 # pc-tidy
 
-Find out what is filling up your Windows PC, clean it up safely, move big files off C:, and keep messy folders sorted. A small AI model runs **locally** on your PC through [Ollama](https://ollama.com), so none of your files or file names leave your computer.
+Free up space on your Windows PC, safely: see what fills C:, clean what comes back by itself, move big files to another drive, and keep messy folders sorted. Nothing is deleted until you have seen the exact list and typed yes, and nothing leaves your PC. Made for Windows 10 and 11.
+
+## Get it: one file
+
+**[Download pc-tidy.exe](https://github.com/HaoPhuc/pc-tidy/releases/latest/download/pc-tidy.exe)** and double-click it. There is nothing to install. (If the link says *Not Found*, no release of pc-tidy.exe is out yet: use [the folder version](#the-folder-version-with-the-ai-sorting-and-cleanupps1) below.)
+
+On an administrator account Windows asks once for admin rights, so pc-tidy can clean the Windows folders too, as you. A standard account isn't asked for anyone's password.
+
+1. **The quick sweep.** In a few seconds, without scanning the whole drive, it lists the temp files older than 7 days, download caches, shader caches and crash dumps, which all come back by themselves. Type `yes` and they go. This is the one place where pc-tidy picks for you, and only these low-risk ones, after showing every item (`O` opens the whole list).
+2. **More, if you want it.** Type `M`, before or after the sweep, for the full scan, a report and the ranked list: moves to another drive, extra copies, old installers, the Recycle Bin. You pick by number, see the exact list, and type yes.
+3. **It leaves nothing behind.** At the end it asks "Remove pc-tidy from this PC?" (Enter = yes, `K` = keep it for next time). It removes only its own files: pc-tidy.exe, once its window closes and only if it is still the same file, and the reports, lists and records it made in `%LOCALAPPDATA%\pc-tidy`. Anything else there stays, and so does that folder. If it moved anything to another drive, the record of that move is copied to that drive first (`<drive>:\From-C\_pc-tidy`, with a `READ ME - moved from C.txt` beside it), so a new download of pc-tidy.exe can still put the files back. It removes nothing while an interrupted run waits to be settled, while another pc-tidy run works, or when a record can't reach its drive.
+
+- It has the guided flow, moves, undo (`pc-tidy.exe undo`) and recover. The local AI, sorting Downloads and `cleanup.ps1` are only in the folder version below.
+- Its report is a web page, saved in `%LOCALAPPDATA%\pc-tidy\reports` and opened from the menu (*Open the reports folder*), not by itself. Its `settings.ini` is in `%LOCALAPPDATA%\pc-tidy`.
+- It unpacks itself into `%LOCALAPPDATA%\pc-tidy\app` each time it runs, never into Temp, and it never offers itself as a file to delete.
+- It never downloads anything and never updates itself. Each time, download the latest.
+
+### Check what you downloaded
+
+- **The hash.** The release page lists its SHA-256. In PowerShell, in the folder with the file, `Get-FileHash .\pc-tidy.exe` must show the same.
+- **Where it was built.** With the [GitHub CLI](https://cli.github.com), `gh attestation verify pc-tidy.exe -R HaoPhuc/pc-tidy` checks that this repository's CI built it from the tagged code.
+- **The signature.** A signed release shows its signer in *Properties > Digital Signatures*, and its release notes say "Signed: yes". Until signing is set up ([docs/RELEASING.md](docs/RELEASING.md)), Windows SmartScreen first shows "Windows protected your PC": *More info > Run anyway*.
+- *Properties > Details* shows its version, and that it is pc-tidy by Phuc Huynh.
+
+## The folder version: with the AI, sorting and cleanup.ps1
+
+The same pc-tidy as a folder, which runs on Python, with everything: the local AI (a small model through [Ollama](https://ollama.com), on your PC only), sorting folders, the PDF report and `cleanup.ps1`.
 
 | Tool | What it does | Changes files? |
 |---|---|---|
@@ -10,89 +36,22 @@ Find out what is filling up your Windows PC, clean it up safely, move big files 
 | `move_off_c.py` | Moves big personal folders and files from C: to another drive. It copies, checks the copy, then deletes. | Moves only, and can undo |
 | `tidy_folder.py` | Sorts a folder (Downloads by default) into subfolders by type. The local AI reads unclear PDFs and Word docs, and can sort whole subfolders. | Moves only, never deletes, and can undo |
 
-Made for Windows 10 and 11.
-
-## Quick start
+To set it up:
 
 1. Install **Python 3.9 or newer** from [python.org](https://www.python.org/downloads/windows/). In the installer, tick **"Add python.exe to PATH"**. For the AI descriptions (optional), also install [Ollama](https://ollama.com).
 2. Get pc-tidy: on [GitHub](https://github.com/HaoPhuc/pc-tidy), click *Code > Download ZIP*. Right-click the ZIP, choose *Extract All*, and pick a folder such as `C:\pc-tidy`. Not a OneDrive folder, and not straight from the ZIP: Windows runs that from your Temp folder, which pc-tidy cleans.
 3. In that folder, double-click **`setup.cmd`** once. It finds Python, installs what pc-tidy needs into the folder's own `.venv`, makes `settings.ini`, offers to download the AI model, and checks that everything works. It is safe to run again.
-4. Double-click **`pc-tidy.cmd`** whenever you want space back. Right-click it and choose *Run as administrator* to include the Windows folders.
+4. Double-click **`pc-tidy.cmd`** whenever you want space back. Right-click it and choose *Run as administrator* to include the Windows folders. `python pc_tidy.py sweep` starts with the quick sweep, as pc-tidy.exe does.
 
-The walkthrough below does the same by hand, and shows each tool on its own.
-
-### pc-tidy.exe: one file, no Python
-
-`pc-tidy.exe` is the guided flow in a single file with Python inside: nothing to install, no setup. Double-click it. On an administrator account Windows asks once for admin rights, so it can clean the Windows folders too, as you; a standard account isn't asked for anyone's password.
-
-It starts with the **quick sweep**: in a few seconds, without scanning the whole drive, it lists the temp files older than 7 days, download caches, shader caches and crash dumps, which all come back by themselves. Type `yes` and they go. This is the one place where pc-tidy picks for you, and only these low-risk ones, after showing every item (`O` opens the whole list). Type `M`, before or after, for more: the full scan, the report and the ranked list with moves, extra copies, old installers and the Recycle Bin. In the folder version, `python pc_tidy.py sweep` starts the same way.
-
-- **At the end it offers to remove itself** ("Remove pc-tidy from this PC?", Enter = yes, `K` = keep it for next time). It removes only its own files: pc-tidy.exe, once its window closes and only if it is still the same file, and the reports, lists and records it made in `%LOCALAPPDATA%\pc-tidy`. Anything else there stays, and so does that folder. If it moved anything to another drive, the record of that move is copied to that drive first (`<drive>:\From-C\_pc-tidy`, with a `READ ME - moved from C.txt` beside it), so a new download of pc-tidy.exe can still put the files back. It removes nothing while an interrupted run waits to be settled, while another pc-tidy run works, or when a record can't reach its drive.
-- It has the guided flow, moves, undo (`pc-tidy.exe undo`) and recover. The local AI, sorting Downloads and `cleanup.ps1` are only in the folder version above.
-- Its report is a web page, saved in `%LOCALAPPDATA%\pc-tidy\reports` and opened from the menu (*Open the reports folder*), not by itself. Its `settings.ini` is in `%LOCALAPPDATA%\pc-tidy`.
-- It unpacks itself into `%LOCALAPPDATA%\pc-tidy\app` each time it runs, never into Temp, and it never offers itself as a file to delete.
-- It isn't signed yet, so Windows SmartScreen warns before it runs. Signing is planned before the first release ([docs/PLAN-3.md](docs/PLAN-3.md), M14).
-- CI builds it on every push (the `pc-tidy-exe` artifact of a run), and publishes it as a GitHub Release for a `v*` tag. To build it yourself: `python -m pip install -r packaging\requirements-build.txt`, then `python -m PyInstaller --noconfirm --clean packaging\pc-tidy.spec`. It lands in `dist\pc-tidy.exe`.
+To set it up by hand instead (git, conda or a venv, and Ollama), to build pc-tidy.exe yourself or to run the tests, see [docs/DEVELOPING.md](docs/DEVELOPING.md).
 
 ---
 
-## Walkthrough
+## Using the tools on their own
 
-### 1. Install the tools (once)
+The commands below run in PowerShell, in the pc-tidy folder. Each tool also has `--help`.
 
-Open **PowerShell** (press the Windows key and type `PowerShell`), then run these one at a time. Paste with Ctrl+V **or** right-click, not both, or the command gets pasted twice.
-
-```powershell
-winget install --id Git.Git -e                      # skip if you already have git
-irm https://ollama.com/install.ps1 | iex            # installs Ollama (or download it from ollama.com)
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned # lets PowerShell run scripts like cleanup.ps1
-```
-
-You also need Python 3.9 or newer. If you already have Anaconda or Miniconda, use that. Otherwise install Python from [python.org](https://www.python.org/downloads/) and tick **"Add python.exe to PATH"** in the installer.
-
-Close PowerShell and open it again so it picks up the new installs.
-
-### 2. Download the code
-
-Go to the folder where you keep projects, then clone:
-
-```powershell
-cd ~
-git clone https://github.com/HaoPhuc/pc-tidy.git
-cd pc-tidy
-```
-
-Your prompt should now end in `\pc-tidy>`. Every command below is run from this folder.
-
-> **Tip:** to `cd` into any folder, type `cd ` (with a space), drag the folder from File Explorer into the PowerShell window, and press Enter.
-
-### 3. Set up Python and the AI model
-
-With conda:
-
-```powershell
-conda create -n pc-tidy python=3.12 -y
-conda activate pc-tidy
-pip install -r requirements.txt
-```
-
-Without conda:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-Then download the AI model (about 2 GB):
-
-```powershell
-ollama pull llama3.2:3b
-```
-
-Each time you open a new PowerShell window later, run `conda activate pc-tidy` (or `.venv\Scripts\Activate.ps1`) again.
-
-### 4. See what is using your drives
+### 1. See what is using your drives
 
 **The easy way:** double-click `pc-tidy.cmd` in the pc-tidy folder. To include the Windows folders (Windows Temp, crash dumps, hibernation), right-click it and choose *Run as administrator* instead. It:
 
@@ -105,11 +64,11 @@ Each time you open a new PowerShell window later, run `conda activate pc-tidy` (
 
 Fixes it can't do for you (the browser cache, Windows.old) say exactly how to do them by hand. Moves are made by `move_off_c.py`, so `python move_off_c.py --undo` puts them back. After that, a menu lets you sort Downloads, undo the last move or sort, open the reports folder, or change settings.
 
-Each tool also works on its own. Open PowerShell **as administrator** (right-click PowerShell > *Run as administrator*) so the scan can look inside protected folders. It starts in `C:\Windows\System32`, so go back to the project first:
+Each tool also works on its own. Open PowerShell **as administrator** (right-click PowerShell > *Run as administrator*) so the scan can look inside protected folders. It starts in `C:\Windows\System32`, so go to the pc-tidy folder first, and use the Python that `setup.cmd` made:
 
 ```powershell
 cd <path to pc-tidy>
-conda activate pc-tidy
+.venv\Scripts\Activate.ps1
 python disk_report.py
 ```
 
@@ -133,7 +92,7 @@ It scans every drive (a few minutes each), saves `disk_report.pdf` and opens it.
 
 Options: `--path C:\` scans one drive only, `--out report.txt` writes plain text instead (give `--out` twice for both), and `--no-open` doesn't open the PDF. The report contains your own folder names, so `.gitignore` keeps it out of git.
 
-### 5. Clean up
+### 2. Clean up
 
 Choose what to clean in the `[cleanup]` section of `settings.ini`:
 
@@ -163,7 +122,7 @@ extra_paths_to_delete =
     D:\old-backups\*.zip
 ```
 
-Then, in the administrator PowerShell (with pc-tidy's environment active, as in step 4):
+Then, in PowerShell opened as administrator, in the pc-tidy folder (it finds the Python that `setup.cmd` made by itself):
 
 ```powershell
 .\cleanup.ps1 -DryRun   # shows the exact list of what would go, changes nothing
@@ -188,7 +147,7 @@ Safety features:
 
 At the end it shows what each step freed, what was skipped and why, and the free space on C: before and after. Everything it did is recorded in `%LOCALAPPDATA%\pc-tidy\runs`.
 
-### 6. Move big files off C:
+### 3. Move big files off C:
 
 If C: is full but another drive has room, move your own big folders and files there. This doesn't need administrator rights.
 
@@ -205,7 +164,7 @@ python move_off_c.py --undo                                 # move the last batc
 - Before copying anything, it checks that no file of the item is open in another program (a video player, Word). If one is, nothing is copied, and it says which file to close.
 - Moved files are no longer covered by File History or Windows Backup of your user folders, unless you back up the other drive too. The list before your yes says so.
 
-### 7. Tidy a folder
+### 4. Tidy a folder
 
 This doesn't need administrator rights.
 
@@ -228,9 +187,9 @@ python tidy_folder.py --source D:\Stuff --dest D:\Sorted --folders            # 
 
 `--in-place` puts the sorted folders inside the folder you're tidying. `--folders` also moves whole subfolders into a category, after the local AI looks at their name and some of the file names inside. Folders keep their contents as they are. Use the same options plus `--undo` to put a run back.
 
-### 8. Optional: tidy Downloads automatically every week
+### 5. Optional: tidy Downloads automatically every week
 
-In PowerShell, from the project folder with the environment active:
+In PowerShell, in the pc-tidy folder, after `.venv\Scripts\Activate.ps1` (so `python` is the one `setup.cmd` made):
 
 ```powershell
 $action  = New-ScheduledTaskAction -Execute (Get-Command python).Source -Argument "tidy_folder.py --apply" -WorkingDirectory (Get-Location).Path
@@ -262,7 +221,7 @@ python pc_tidy.py settings show    # shows every value and where it came from
 | `[move]` | `move_off_c.py` | `min_gb`, `dest_folder_name` |
 | `[tidy]` | `tidy_folder.py` and the weekly task | `source`, `dest`, `archive_after_days`, `skip_newer_than_min`, `rename_with_ai`, `categories` (the folders the AI picks from) |
 | `[tidy.extensions]` | `tidy_folder.py` and the weekly task | `extension = folder`, for example `.pdf = Papers` |
-| `[cleanup]` | `cleanup.ps1` | What it cleans: the switches and lists of step 5, and `installers_min_age_days` |
+| `[cleanup]` | `cleanup.ps1` | What it cleans: the switches and lists of *2. Clean up* above, `temp_min_age_days` and `installers_min_age_days` |
 | `[label.<name>]`, `[category.<name>]`, `[apptype.<name>]` | `disk_report.py` | Your own rules, instead of editing `classify.py` (below) |
 
 How to write it:
@@ -296,7 +255,7 @@ type = Dev & science tools
 Before 2.0 the settings were inside the scripts, so your edited `cleanup.ps1` and `.py` files would block `git pull`. Instead:
 
 1. Rename your `pc-tidy` folder to `pc-tidy-old`.
-2. Get a fresh copy into a new `pc-tidy` folder next to it, as in step 2 of the walkthrough or the quick start.
+2. Get a fresh copy into a new `pc-tidy` folder next to it, as in [the folder version](#the-folder-version-with-the-ai-sorting-and-cleanupps1) above.
 3. In the new folder, double-click `setup.cmd`. It finds `..\pc-tidy-old` and offers to bring its settings in. Or run:
 
 ```powershell
@@ -320,7 +279,8 @@ It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of
 | Problem | Fix |
 |---|---|
 | `Error: accepts 1 arg(s), received 3`, or a command looks doubled | It was pasted twice. Right-click also pastes in the terminal, so use only one of the two. |
-| `Could not open requirements file` | You're not in the project folder. `cd` into `pc-tidy` first (see the tip in step 2). |
+| `Could not open requirements file` | You're not in the project folder. `cd` into `pc-tidy` first: type `cd ` (with a space), drag the folder from File Explorer into the PowerShell window, and press Enter. |
+| "Windows protected your PC" when starting pc-tidy.exe | That release isn't signed yet (its release notes say so). Check its hash or attestation as [Check what you downloaded](#check-what-you-downloaded) says, then *More info > Run anyway*. |
 | `running scripts is disabled on this system` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. |
 | `... stopped: ...` | The line says what happened and what to do. The details are in `%LOCALAPPDATA%\pc-tidy\logs\pc-tidy.log`; add `--debug` to the command to see them on screen. |
 | `a part it needs isn't installed` or `No module named 'reportlab'` | Double-click `setup.cmd` again, or run `pip install -r requirements.txt`. |
@@ -341,7 +301,7 @@ It reads the SETTINGS block of the old `cleanup.ps1`, the settings at the top of
 - **Rules first, AI second.** Plain rules in `classify.py` (plus your own in `settings.ini`) handle everything predictable. The AI is used only where rules can't decide: reading a PDF to sort it, sorting a whole folder, naming the type of an unfamiliar app, or describing an unfamiliar folder.
 - **The AI never decides what gets deleted.** Its descriptions are labeled as guesses, and `cleanup.ps1` only does what you switch on.
 - **Small and local.** `llama3.2:3b` runs on most laptops without a GPU and nothing is sent online.
-- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and the `pctidy` package holds the rest: `settings.py` (settings.ini), `fixes.py` (the ranked fixes), `leftovers.py` (what's left), `guided.py` (the guided flow), `cleanup.py` (what `cleanup.ps1` runs), and the safety core (`safety.py`, `plan.py`, `executor.py`, `journal.py`, `lock.py`, `undo.py`). The plan for 2.0 is in [docs/PLAN.md](docs/PLAN.md), the plan for 3.0 in [docs/PLAN-3.md](docs/PLAN-3.md), and the checks to do by hand before a release are in [docs/CHECKLIST.md](docs/CHECKLIST.md).
+- **Files:** `scanner.py` walks the drives, `classify.py` holds the built-in rules, `pdf_report.py` draws the PDF, `llm.py` talks to Ollama, and the `pctidy` package holds the rest: `settings.py` (settings.ini), `fixes.py` (the ranked fixes), `leftovers.py` (what's left), `guided.py` (the guided flow), `cleanup.py` (what `cleanup.ps1` runs), and the safety core (`safety.py`, `plan.py`, `executor.py`, `journal.py`, `lock.py`, `undo.py`). The plan for 2.0 is in [docs/PLAN.md](docs/PLAN.md), the plan for 3.0 in [docs/PLAN-3.md](docs/PLAN-3.md), setting up, testing and building in [docs/DEVELOPING.md](docs/DEVELOPING.md), releases in [docs/RELEASING.md](docs/RELEASING.md), and the checks to do by hand before a release are in [docs/CHECKLIST.md](docs/CHECKLIST.md).
 
 ## License
 

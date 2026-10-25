@@ -31,6 +31,32 @@ def _highest_available(manifest_dom, root_element, uac_admin=False, uac_uiaccess
 
 winmanifest._set_execution_level = _highest_available
 
+
+def _version_info():
+    """What Properties > Details shows: product, version and author. The version comes from
+    PCTIDY_VERSION (CI sets the v* tag, e.g. v3.0.0), else 0.0.0."""
+    from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                     VarFileInfo, VarStruct, VSVersionInfo)
+    text = os.environ.get("PCTIDY_VERSION", "0.0.0").lstrip("v")
+    numbers = []
+    for part in text.replace("-", ".").replace("+", ".").split(".")[:4]:
+        if not part.isdigit():
+            break
+        numbers.append(int(part))
+    numbers = tuple((numbers + [0, 0, 0, 0])[:4])
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=numbers, prodvers=numbers),
+        kids=[StringFileInfo([StringTable("040904B0", [
+                  StringStruct("CompanyName", "Phuc Huynh"),
+                  StringStruct("FileDescription", "pc-tidy: free space on C:, safely"),
+                  StringStruct("FileVersion", text),
+                  StringStruct("InternalName", "pc-tidy"),
+                  StringStruct("LegalCopyright", "Copyright (c) 2026 Phuc Huynh. MIT License."),
+                  StringStruct("OriginalFilename", "pc-tidy.exe"),
+                  StringStruct("ProductName", "pc-tidy"),
+                  StringStruct("ProductVersion", text)])]),
+              VarFileInfo([VarStruct("Translation", [1033, 1200])])])
+
 a = Analysis(
     [os.path.join(ROOT, "pc_tidy.py")],
     pathex=[ROOT],
@@ -52,4 +78,5 @@ exe = EXE(
     upx=False,
     runtime_tmpdir=r"%LOCALAPPDATA%\pc-tidy\app",
     manifest=os.path.join(SPECPATH, "pc-tidy.manifest"),
+    version=_version_info(),
 )
