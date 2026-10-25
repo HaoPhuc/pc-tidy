@@ -1,5 +1,5 @@
 # Pester 5 tests for cleanup.ps1 on Windows PowerShell 5.1. Run: Invoke-Pester tests\ps
-# They only read the script; the dry runs are tested from pytest (tests\test_cleanup_ps1.py).
+# They only read the script; its runs are tested from pytest (tests\test_cleanup_ps1.py).
 
 BeforeAll {
     $script:Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -28,20 +28,19 @@ Describe 'cleanup.ps1' {
     It 'has no SETTINGS block left: what it cleans comes from settings.ini' {
         $text = Get-Content -LiteralPath $CleanupPath -Raw
         $text | Should -Not -Match '(?m)^\$\w+\s*=\s*\$(true|false)\b'
-        $text | Should -Match 'pc_tidy\.py" cleanup-settings'
     }
 
-    It 'reads every key of the [cleanup] section in settings.template.ini' {
+    It 'runs python pc_tidy.py cleanup, and passes -DryRun on as --dry-run' {
         $text = Get-Content -LiteralPath $CleanupPath -Raw
-        $template = Get-Content -LiteralPath (Join-Path $Root 'settings.template.ini')
-        $start = [array]::IndexOf($template, '[cleanup]')
-        $keys = foreach ($line in $template[($start + 1)..($template.Count - 1)]) {
-            if ($line -match '^\[') { break }
-            if ($line -match '^(\w+)\s*=') { $Matches[1] }
-        }
-        $keys.Count | Should -BeGreaterThan 10
-        foreach ($key in $keys) {
-            $text | Should -Match "\`$s\.$key\b"
+        $text | Should -Match 'pc_tidy\.py", "cleanup"'
+        $text | Should -Match 'if \(\$DryRun\) \{ \$pyArgs \+= "--dry-run" \}'
+        $text | Should -Match 'exit \$LASTEXITCODE'
+    }
+
+    It 'deletes nothing itself: the executor does, from the list you saw' {
+        $text = Get-Content -LiteralPath $CleanupPath -Raw
+        foreach ($command in 'Remove-Item', 'Clear-RecycleBin', 'powercfg', 'winget', 'conda clean', 'conda remove') {
+            $text | Should -Not -Match ([regex]::Escape($command))
         }
     }
 }

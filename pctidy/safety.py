@@ -14,12 +14,11 @@ Operations: "delete", "move" (the item moved), "move-to" (where it goes), "rmdir
 pc-tidy made), "sort" (tidy_folder.py --source).
 """
 
-import fnmatch
 import os
 from collections import namedtuple
 
 from . import context
-from .paths import has_wildcard, inside, is_root, norm, real, real_parent
+from .paths import has_wildcard, inside, is_root, match, norm, real, real_parent
 
 OPERATIONS = ("delete", "move", "move-to", "rmdir", "sort")
 
@@ -188,7 +187,7 @@ class _Rules:
                 if row.kind == "contents":
                     if inside(p, pattern, strict=True):
                         return row
-                elif _match(p, pattern):
+                elif match(p, pattern):
                     return row
         return None
 
@@ -259,9 +258,3 @@ class _Rules:
             self._temp = (f"Your TEMP variable points at {self.ctx.temp}, which isn't a temp folder. "
                           "The Temp fix was skipped.") if bad else None
         return self._temp
-
-
-def _match(path, pattern):
-    """fnmatch, one path part at a time, so * never matches a backslash."""
-    a, b = path.split("\\"), pattern.split("\\")
-    return len(a) == len(b) and all(fnmatch.fnmatchcase(x, y) for x, y in zip(a, b))

@@ -17,7 +17,6 @@ The risk of a fix comes from this module, never from settings or the AI:
     High    it is gone for good
 """
 
-import glob
 import os
 import re
 import shutil
@@ -25,7 +24,7 @@ import time
 
 from . import _win, context, safety
 from .progress import Line
-from .paths import inside, lp, norm
+from .paths import expand, inside, lp, norm
 
 GB = 1024 ** 3
 MB = 1024 ** 2
@@ -196,8 +195,7 @@ class _Measure:
             return
         except OSError:
             return
-        # the folder part escaped, so a [ in a folder name is just a [
-        for path in glob.glob(glob.escape(parent) + pattern[len(parent):]):
+        for path in expand(pattern):
             if os.path.isfile(path):
                 self.budget.tick()
                 self.fix.files[_key(path)] = file_bytes(path)

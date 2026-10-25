@@ -1,5 +1,12 @@
-"""Path helpers shared by the safety core: comparing Windows paths and resolving links."""
+"""Path helpers shared by the safety core: comparing Windows paths, resolving links, and matching
+wildcards.
 
+Only * and ? are wildcards anywhere in pc-tidy. [ and ] are part of a name, as they are in Windows:
+D:\\Photos [2019] is that one folder. fnmatch, glob and PowerShell's -Path all read [2019] as "one
+of 2, 0, 1 or 9", so every match goes through match() and expand() here, which never do.
+"""
+
+import fnmatch
 import os
 
 from ._win import long_path, plain_path
@@ -40,6 +47,37 @@ def is_root(path):
 
 def has_wildcard(path):
     return any(c in os.fspath(path) for c in WILDCARDS)
+
+
+def part_matches(name, pattern):
+    """One name against one part of a pattern, ignoring case. A [ is just a [."""
+    return fnmatch.fnmatchcase(name.lower(), pattern.lower().replace("[", "[[]"))
+
+
+def match(path, pattern):
+    """A path against a pattern, one part at a time, so * never matches a backslash."""
+    a, b = path.split("\\"), pattern.split("\\")
+    return len(a) == len(b) and all(part_matches(x, y) for x, y in zip(a, b))
+
+
+def expand(pattern):
+    """The paths that exist and match a pattern, sorted. A path without a wildcard is returned as
+    it is, if it exists."""
+    drive, rest = os.path.splitdrive(os.path.abspath(os.fspath(pattern)))
+    found = [drive + "\\"]
+    for part in [x for x in rest.split("\\") if x]:
+        step = []
+        for base in found:
+            if has_wildcard(part):
+                try:
+                    names = os.listdir(lp(base))
+                except OSError:
+                    continue
+                step += [os.path.join(base, n) for n in names if part_matches(n, part)]
+            elif os.path.lexists(lp(os.path.join(base, part))):
+                step.append(os.path.join(base, part))
+        found = step
+    return sorted(found, key=str.lower)
 
 
 def real(path):

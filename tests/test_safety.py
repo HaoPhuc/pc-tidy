@@ -5,11 +5,10 @@ profiles are all fake folders in tmp_path. Drive roots are real letters, but not
 """
 
 import os
-import re
 
 import pytest
 
-from pctidy import safety
+from pctidy import paths, safety
 from pctidy.context import APP_DIR, Context
 from support import ROOT
 
@@ -178,21 +177,7 @@ def test_a_link_into_a_protected_folder_is_judged_by_where_it_leads(fake, tmp_pa
     assert safety.why_refused(link, "delete", ctx) is None               # the link itself is fine to remove
 
 
-# ---------- every path today's cleanup.ps1 removes maps to a row, and nothing else does ----------
-
-def cleanup_ps1_patterns(ctx):
-    """The Remove-Paths patterns in today's cleanup.ps1, with $env: variables from the context. Each
-    once: the Temp step lists Windows\\Temp twice (with and without your TEMP, problem 14)."""
-    text = (ROOT / "cleanup.ps1").read_text(encoding="utf-8")
-    values = {"TEMP": ctx.temp, "SystemRoot": ctx.system_root, "LOCALAPPDATA": ctx.local_appdata}
-    out = []
-    for call in re.findall(r'Remove-Paths\s+"[^"]*"\s+@\((.*?)\)', text, re.S):
-        for quoted in re.findall(r'"([^"]+)"', call):
-            if quoted == "$p":
-                continue      # ExtraPathsToDelete: the user's own, checked one by one
-            out.append(re.sub(r"\$env:(\w+)", lambda m: values[m.group(1)], quoted))
-    return list(dict.fromkeys(out))
-
+# ---------- every folder a [cleanup] switch empties maps to a row, and nothing else does ----------
 
 def table_patterns(ctx):
     out = []
@@ -203,14 +188,53 @@ def table_patterns(ctx):
     return out
 
 
-def test_cleanup_ps1_and_the_exception_table_match_line_by_line(fake):
-    ctx = context_for(fake)
-    ps1, table = cleanup_ps1_patterns(ctx), table_patterns(ctx)
+def test_the_cleanup_switches_and_the_exception_table_match_line_by_line(fake):
+    """Every place a [cleanup] switch empties inside a protected folder is in the exception table, and
+    every row of the table has a switch."""
+    from pctidy import cleanup, settings
+    switches = {k.name for k in settings.SECTIONS["cleanup"]}
+    covered = []
+    for switch, fix, part, _title in cleanup._TABLE:
+        assert switch in switches, switch
+        (row,) = [r for r in safety.ALLOWED if r.fix == fix]
+        covered += [p for p in row.patterns if part is None or part in p]
+    assert sorted(covered) == sorted(p for r in safety.ALLOWED for p in r.patterns)
 
-    assert len(ps1) == 14
-    assert sorted(p.lower() for p in ps1) == sorted(p.lower() for p in table)
-    for pattern in ps1:
+    ctx = context_for(fake)
+    table = table_patterns(ctx)
+    assert len(table) == 14
+    for pattern in table:
         assert safety.why_refused(pattern, "delete", ctx) is None, pattern
+
+
+# ---------- wildcards: only * and ? ----------
+
+@pytest.mark.parametrize("name, pattern, matches", [
+    ("old[1]", "old[1]", True), ("old1", "old[1]", False),          # problem 17
+    ("b [2].zip", "b [2]*.zip", True), ("b 2.zip", "b [2]*.zip", False),
+    ("c1.log", "c?.log", True), ("c12.log", "c?.log", False),
+    ("Report.PDF", "*.pdf", True), ("a]b", "a]b", True), ("[!x]", "[!x]", True), ("y", "[!x]", False),
+])
+def test_only_star_and_question_mark_are_wildcards(name, pattern, matches):
+    assert paths.part_matches(name, pattern) is matches
+
+
+def test_expand_finds_exactly_what_a_path_names(tmp_path):
+    for name in ("old[1]", "old1", "old2"):
+        (tmp_path / name).mkdir()
+
+    assert paths.expand(str(tmp_path / "old[1]")) == [str(tmp_path / "old[1]")]
+    assert paths.expand(str(tmp_path / "old?")) == [str(tmp_path / "old1"), str(tmp_path / "old2")]
+    assert paths.expand(str(tmp_path / "*" / "nothing")) == []
+    assert paths.expand(str(tmp_path / "missing")) == []
+
+
+def test_the_exception_table_treats_brackets_as_part_of_a_name(fake):
+    """A Windows folder whose name has [ ] in it: its crash dumps match, and nothing else does."""
+    tmp_path, _env = fake
+    ctx = context_for(fake, SystemRoot=str(tmp_path / "Win[dows]"))
+    assert safety.allowed_row(str(tmp_path / "Win[dows]" / "Minidump" / "a.dmp"), ctx).fix == "crash-dumps-windows"
+    assert safety.allowed_row(str(tmp_path / "Wind" / "Minidump" / "a.dmp"), ctx) is None
 
 
 def test_nothing_next_to_an_exception_is_allowed(fake):

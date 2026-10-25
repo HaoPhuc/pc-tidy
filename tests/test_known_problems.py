@@ -6,14 +6,15 @@ and the xfail mark is removed so the test guards the fix from then on. raises=As
 unrelated crash from counting as the known failure.
 
 Fixed in M2 (the safety core): 3, 4, 5, 13, 15. Fixed in M4 (cleanup.ps1 on settings.ini): 1, 14.
+Fixed in M9 (cleanup.ps1 on the executor), numbers from docs/PLAN-3.md: 17, 18, 19.
 Nothing is pinned any more; known() stays for the next problem found.
 """
 
 import pytest
 
 from pctidy import context, safety, settings
-from support import ROOT, snapshot, write
-from test_cleanup_ps1 import cleanup_settings, needs_admin, section
+from support import snapshot, write
+from test_cleanup_ps1 import cleanup_settings
 
 
 def known(number, why):
@@ -33,13 +34,12 @@ def test_a_wildcard_under_a_drive_root_is_refused(subst_drive):
     assert problem and "a wildcard directly under a drive root could empty the drive" in problem, problem
 
 
-@needs_admin
 def test_extra_paths_refuse_a_wildcard_under_a_drive_root(run, tmp_path, subst_drive):
     """Problem 1, fixed in M4: cleanup.ps1 stops at the line, before it does anything."""
     write(subst_drive.target / "everything.txt", b"all of drive X:")
     cleanup_settings(tmp_path, extra_paths=[subst_drive.root + "*"])
 
-    result = run.powershell(ROOT / "cleanup.ps1", "-DryRun")      # a dry run: nothing is deleted either way
+    result = run.python("pc_tidy.py", "cleanup", input="yes\nyes\n")      # what .\cleanup.ps1 runs
 
     assert result.returncode == settings.EXIT, result.output
     assert (f"settings.ini line 12 in [cleanup]: extra_paths_to_delete '{subst_drive.root}*' is refused: "
@@ -122,22 +122,49 @@ def test_tidy_refuses_to_sort_a_profile_folder(run, profile, tmp_path):
         assert (profile / name).is_dir(), f"{name} was moved out of the profile"
 
 
-@needs_admin
 def test_temp_step_refuses_a_temp_variable_that_points_at_a_drive_root(run, tmp_path, subst_drive):
     """Problem 14, fixed in M4: a TEMP that isn't a temp folder is left alone (the old cleanup.ps1
-    emptied "$env:TEMP\\*" whatever it pointed at); Windows\\Temp is still cleaned."""
+    emptied "$env:TEMP\\*" whatever it pointed at). A real run, not only the dry run, since M9."""
     write(subst_drive.target / "not-temp.txt", b"someone's file")
     cleanup_settings(tmp_path, switches_on={"temp_files"})
 
-    result = run.powershell(ROOT / "cleanup.ps1", "-DryRun",
-                            extra_env={"TEMP": subst_drive.root, "TMP": subst_drive.root})
+    result = run.python("pc_tidy.py", "cleanup", input="yes\n", env={"TEMP": subst_drive.root, "TMP": subst_drive.root})
 
     assert result.returncode == 0, result.output
-    step = section(result.output, "Temp files")
-    assert (f"Your TEMP variable points at {subst_drive.root}, which isn't a temp folder, so it is left alone."
-            in step), step
-    assert "would remove about" in step                    # Windows\Temp, measured
+    assert (f"Your TEMP variable points at {subst_drive.root}, which isn't a temp folder. The Temp fix was skipped."
+            in result.stdout), result.output
     assert (subst_drive.target / "not-temp.txt").exists()
+
+
+def test_brackets_in_an_extra_path_are_part_of_its_name(run, tmp_path):
+    """Problem 17, fixed in M9: D:\\old[1] is that one folder. The old cleanup.ps1 checked it as one
+    folder, then gave it to Remove-Item -Path, which read [1] as a wildcard: it deleted old1 instead
+    and left old[1]."""
+    meant = write(tmp_path / "backups" / "old[1]" / "a.txt", b"delete me").parent
+    other = write(tmp_path / "backups" / "old1" / "b.txt", b"keep me").parent
+    cleanup_settings(tmp_path, extra_paths=[meant])
+
+    dry = run.python("pc_tidy.py", "cleanup", "--dry-run")
+    result = run.python("pc_tidy.py", "cleanup", input="yes\nyes\n")
+
+    assert f"Delete {meant}: delete 1 item" in dry.stdout, dry.output
+    assert str(other) not in dry.stdout
+    assert result.returncode == 0, result.output
+    assert not meant.exists()
+    assert (other / "b.txt").read_bytes() == b"keep me"
+
+
+# Problem 18 (.\cleanup.ps1 asked for yes after category names only, then listed folders again and
+# deleted what it found) is fixed in M9: test_cleanup_ps1.py runs it for real, including a file that
+# appears after the dry run.
+
+
+def test_the_recycle_bin_is_off_by_default(tmp_path):
+    """Problem 19, fixed in M9: the template switched the Recycle Bin on, so .\\cleanup.ps1 emptied it
+    after one yes, while the guided flow called it high risk and asked twice."""
+    cfg = settings.load(context.current(), create=True)
+    assert cfg.value("cleanup", "recycle_bin") is False
+    assert "\nrecycle_bin = no\n" in (tmp_path / "settings.ini").read_text(encoding="utf-8")
 
 
 def test_move_to_a_subst_letter_on_the_same_volume_is_refused(run, profile, subst_drive):

@@ -206,14 +206,14 @@ class Runner:
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         return Started(proc, self)
 
-    def powershell(self, script, *args, extra_env=None, timeout=600):
+    def powershell(self, script, *args, extra_env=None, timeout=600, input=None):
         """Run a .ps1 file in Windows PowerShell 5.1. -NonInteractive makes any Read-Host fail at once.
-        The Python it starts (cleanup.ps1 reads settings.ini through pc_tidy.py) is this one, guarded."""
+        The Python it starts (cleanup.ps1 runs pc_tidy.py) is this one, guarded, and reads `input`."""
         env = self.env()
         env["PCTIDY_PYTHON"] = sys.executable
         env.update({k.upper(): v for k, v in (extra_env or {}).items()})
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                 "-File", str(script), *map(str, args)], cwd=str(self.work), env=env,
+                                 "-File", str(script), *map(str, args)], cwd=str(self.work), env=env, input=input,
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 timeout=timeout)
         result.output = result.stdout + result.stderr

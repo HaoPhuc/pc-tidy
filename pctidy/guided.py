@@ -20,7 +20,6 @@ normal one they are listed, and say so.
 """
 
 import collections
-import glob
 import os
 import shutil
 import subprocess
@@ -29,6 +28,7 @@ import time
 
 from . import _win, context, executor, journal, leftovers, lock, recovery, safety, settings, ui, volume
 from .fixes import gb
+from .paths import expand
 from .plan import Plan, fingerprint
 from .progress import Line
 
@@ -297,17 +297,18 @@ class DryRun:
                 for name in names:
                     self._add(os.path.join(place, name))
             elif a["delete"] == "patterns":
-                parent = place[:place.index("*")].rsplit("\\", 1)[0] if "*" in place else None
-                found = glob.glob(glob.escape(parent) + place[len(parent):]) if parent else [place]
-                for path in sorted(found):
+                for path in expand(place):
                     if os.path.isfile(path):
                         self._add(path)
+            elif a["delete"] == "matches":      # your extra paths: every file or folder the path names
+                for path in expand(place):
+                    self._add(path)
             else:
                 self._add(place)
 
     def _tool(self, row, a):
         name = a.get("name")
-        if name and (name == "base" or os.environ.get("CONDA_DEFAULT_ENV") == name):
+        if a["tool"] == "conda_env_remove" and (name == "base" or os.environ.get("CONDA_DEFAULT_ENV") == name):
             self.refused.append((name, "it is conda's own environment, or the one this window is in"))
             return
         self.deletes.add_tool(a["tool"], measured=None, **({"name": name} if name else {}))
@@ -412,20 +413,34 @@ def free_space(ctx, cfg, data):
         return 0
     move_dest = (data.get("move") or {}).get("dest")
     dry = DryRun(ctx, cfg, doable, move_dest)
-    print("\nDRY RUN: this is exactly what will happen. Nothing has changed yet.")
-    for row in doable:
+    listing = show_dry_run(dry, "\nDRY RUN: this is exactly what will happen. Nothing has changed yet.")
+    if dry.empty:
+        print("There is nothing left to do: everything picked is already gone.")
+        return 0
+    return confirm_and_run(ctx, dry, listing)
+
+
+def show_dry_run(dry, header):
+    """The dry run on screen: what each fix will do, what was left out and why, the total. Returns
+    the path of the full list, or None if it couldn't be saved or there is nothing to do."""
+    print(header)
+    for row in dry.rows:
         print("\n".join(dry.describe(row)))
     for path, why in dry.refused:
         print(f"  Left out {path}: {why}.")
     if dry.empty:
-        print("There is nothing left to do: everything picked is already gone.")
-        return 0
-    total = sum(a.get("bytes", 0) for a in dry.deletes.actions) + \
+        return None
+    total = sum(a.get("bytes") or (a.get("measured") or {}).get("bytes", 0) for a in dry.deletes.actions) + \
         sum(a["bytes"] for a in (dry.moves.actions if dry.moves else []))
     print(f"\nIn all: about {gb(total)}.")
     listing = dry.save_text()
     if listing:
         print(f"The full list: {listing}")
+    return listing
+
+
+def confirm_and_run(ctx, dry, listing):
+    """The typed yes, a second yes for each high-risk fix, then the run and its summary."""
     if not confirm(ctx, listing):
         print("Cancelled, nothing changed.")
         return 0
@@ -521,7 +536,7 @@ def summary(dry, outcomes, before, after, drive, records):
         else:
             what = f"freed {gb(nbytes)}"
         line = f"  {row['n']:>2}  {row['title']}: {what}"
-        if op not in ("run_tool", "move"):
+        if op not in ("run_tool", "move") and row.get("size"):
             line += f" (the report said {row['size']})"
         print(line)
         if skipped:
