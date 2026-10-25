@@ -6,8 +6,9 @@ Written 2026-10-25, from reading the code at `bf88129` (M8 merged). Problem 17 w
 
 | Milestone | State |
 |---|---|
-| M9 One engine that deletes | **Done** on branch `claude/product-safety-convenience-0264ba`. Fixes problems 17, 18 and 19. The command is `python pc_tidy.py cleanup [--dry-run]`, which replaces the JSON-only `cleanup-settings`. Tools and the Recycle Bin are tested with stand-ins in-process, and `cleanup.ps1`'s own real run only in CI, which is elevated. |
-| M10–M14 | Not started |
+| M9 One engine that deletes | **Done**, merged in PR #13. Fixes problems 17, 18 and 19. The command is `python pc_tidy.py cleanup [--dry-run]`, which replaces the JSON-only `cleanup-settings`. Tools and the Recycle Bin are tested with stand-ins in-process, and `cleanup.ps1`'s own real run only in CI, which is elevated. |
+| M10 Safer fixes | **Items 1–7 done**, on the same branch. They fix problems 20–26: the Temp age floor (`temp_min_age_days`), pinned and byte-checked kept copies, the other-account check, Node.js only in quiet projects, installers High, and app folders, files in use and the backup note for moves. Item 8, parking on another drive, is not built: it was the planned cut. |
+| M11–M14 | Not started |
 
 **Goal, in order:**
 1. No clean can lose a file you didn't mean to lose, whichever way you start it.

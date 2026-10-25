@@ -19,8 +19,8 @@ and [leftovers] extra_folders: never in AppData, dot-folders or system folders.
   with .js/.ts, a lock file or node_modules; pyproject.toml, setup.py or requirements.txt with .py;
   Cargo.toml with src; CMakeLists.txt with C or C++; a .sln with a .csproj or .vcxproj; an .Rproj
   with .R), strictly below one of those folders, and never a folder tidy_folder.py makes itself. The
-  outermost one wins. A venv or Rust's target folder in a project that hasn't changed for 30 days
-  is offered for deleting: it can be made again.
+  outermost one wins. A venv, Rust's target folder or node_modules (next to its package.json) in a
+  project that hasn't changed for 30 days is offered for deleting: it can be made again.
 
 Every time is read from the folder listing before any file is opened, and every file is read
 through _win.open_untouched, so checking duplicates never changes when a file was last opened.
@@ -360,13 +360,15 @@ def analyse(ctx, cfg, progress=True):
     for d in projects:
         if d.newest_own > now - PROJECT_QUIET_DAYS * 86400:
             continue
-        for name, kind in (("venv", "venv"), (".venv", "venv"), ("target", "target")):
+        for name, kind in (("venv", "venv"), (".venv", "venv"), ("target", "target"), ("node_modules", "node")):
             folder = os.path.join(d.path, name)
             if name not in d.dirs:
                 continue
             if kind == "venv" and not os.path.isfile(os.path.join(folder, "pyvenv.cfg")):
                 continue
             if kind == "target" and "cargo.toml" not in d.files:
+                continue
+            if kind == "node" and "package.json" not in d.files:
                 continue
             rebuildable.append({"path": folder, "kind": kind, "project": d.path})
 

@@ -106,7 +106,7 @@ It scans every drive (a few minutes each), saves `disk_report.pdf` and opens it.
 - **What's left in your folders** (Desktop, Documents, Downloads, Music, Pictures, Videos and Sorted):
   - **Duplicates:** files with exactly the same content. Hard links are left out, since they're one file. Loose extra copies (right in Downloads or Desktop, or in a Sorted folder), where copies end up by accident, become a fix; an identical copy always stays. Copies deeper in a folder, such as an unpacked app, are only listed.
   - **Big files you haven't opened for months:** these can be moved off C:, never deleted.
-  - **Empty folders** and **projects** (folders with `.git`, or a `package.json`, `requirements.txt`, `Cargo.toml` ... with their source). A project untouched for 30 days offers its venv or Rust `target` folder as a fix, since those can be rebuilt.
+  - **Empty folders** and **projects** (folders with `.git`, or a `package.json`, `requirements.txt`, `Cargo.toml` ... with their source). A project untouched for 30 days offers its venv, Rust `target` folder or `node_modules` as a fix, since those can be rebuilt. Only projects in your own folders count, so an editor's extensions or a package manager's own `node_modules` are never offered.
 
   Checking for duplicates never changes when a file was last opened.
 - **Drives**: used and free space on each drive.
@@ -135,6 +135,7 @@ pip_cache = yes          # pip download cache
 uv_cache = yes           # uv download cache
 gpu_shader_cache = yes   # NVIDIA / AMD / DirectX shader caches
 temp_files = yes         # Temp folders
+temp_min_age_days = 7    # ... only what is older than this
 recycle_bin = no         # empty the Recycle Bin on every drive (asks a second time)
 crash_dumps = yes        # *.dmp crash dumps
 hibernation = no         # turn off hibernation, frees C:\hiberfil.sys
@@ -165,7 +166,9 @@ Safety features:
 - In `extra_paths_to_delete` only `*` and `?` are wildcards. `[` and `]` are part of a name: `D:\Photos [2019]` is that one folder.
 - A link (a junction or symlink) inside a folder it deletes is removed itself. What it points at is never touched.
 - If your `TEMP` variable points somewhere that isn't a temp folder (a drive root, say), your Temp folder is left alone and only `C:\Windows\Temp` is cleaned.
-- Installers changed in the last `installers_min_age_days` days are left alone, since you may not have installed them yet.
+- Temp files are cleaned only when nothing in them was created or changed in the last `temp_min_age_days` days (7, as Disk Cleanup does). A file you open from a ZIP or an email lives in Temp while you work on it, and so do the files of an installer that is running.
+- Installers changed in the last `installers_min_age_days` days are left alone, since you may not have installed them yet. Deleting installers is high risk and asks a second time: a portable program runs straight from its `.exe`, and an old version may not be downloadable again.
+- Run as administrator with someone else's password (on a standard account, say), it runs as that account, whose Temp and Downloads aren't yours. It then cleans only the Windows folders, and says so.
 - Files that are in use are skipped instead of forced.
 - The list shows every installer it would delete. Check it for portable apps, which run straight from their `.exe`, before you type yes.
 - App uninstalls run last. Some uninstallers open their own window, so click through those. Restart once afterwards.
@@ -185,6 +188,9 @@ python move_off_c.py --undo                                 # move the last batc
 - By default things go to `<drive with the most free space>:\From-C`, keeping the same folder structure. Use `--to E:\Archive` to choose.
 - Each item is copied, the copy is checked, and only then is the original deleted. If a copy fails, the original stays and the partial copy is removed.
 - Only folders and files inside your user profile are offered. Apps, games and system files break when moved by hand, so the script points you to the right way instead: Steam > Settings > Storage for games, right-click > Properties > Location for a whole Documents or Videos folder, and "Free up space" for OneDrive.
+- Folders where apps keep their own files are never offered either, even inside Documents: `Outlook Files` and any folder with Outlook's `.pst` or `.ost` mail files (move those in Outlook: *File > Account Settings > Data Files*), `My Games`, `WindowsPowerShell`, `Visual Studio` and a few more. The list of candidates says which ones it left out and why.
+- Before copying anything, it checks that no file of the item is open in another program (a video player, Word). If one is, nothing is copied, and it says which file to close.
+- Moved files are no longer covered by File History or Windows Backup of your user folders, unless you back up the other drive too. The list before your yes says so.
 
 ### 7. Tidy a folder
 

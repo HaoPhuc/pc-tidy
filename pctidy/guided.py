@@ -28,8 +28,8 @@ import time
 
 from . import _win, context, executor, journal, leftovers, lock, recovery, safety, settings, ui, volume
 from .fixes import gb
-from .paths import expand
-from .plan import Plan, fingerprint
+from .paths import expand, inside
+from .plan import Plan, fingerprint, old_enough
 from .progress import Line
 
 COMMAND = "pc-tidy"
@@ -100,6 +100,11 @@ def checks(ctx, cfg):
     if not _win.is_elevated():
         print("This window isn't running as administrator, so the Windows folders (Windows Temp, crash dumps, "
               f"hibernation) can't be measured or cleaned here. For those: {ADMIN_HINT}\n")
+    other = ctx.other_account()
+    if other:
+        print(f"This window runs as {other[0]}, but {other[1]} is signed in. {other[1]}'s Temp, Downloads and "
+              f"other folders are left alone here: only the Windows folders can be cleaned. For the rest, run "
+              f"pc-tidy from {other[1]}'s own account.\n")
     free = volume.free_bytes(ctx.system_drive)
     if free is not None and free < FULL_C:
         print(f"{ctx.system_drive[:2]} is full ({gb(free)} free). Start with the low-risk fixes at the top, which "
@@ -148,12 +153,15 @@ def availability(ctx, cfg, rows):
     """{fix id: None if pc-tidy can do it here, else why not}."""
     elevated = _win.is_elevated()
     conda = shutil.which("conda")
+    other = ctx.other_account()
     out = {}
     for row in rows:
         a = row["action"]
         why = None
         if not a:
             why = "by hand"
+        elif other and row["scope"] == "user":
+            why = f"belongs to {other[1]}, and this window runs as {other[0]}"
         elif row["scope"] == "machine" and not elevated:
             why = "needs an administrator window"
         elif row["state"] == "admin":
@@ -163,6 +171,8 @@ def availability(ctx, cfg, rows):
         elif a.get("tool", "").startswith("conda") and not conda:
             why = "needs conda: open an Anaconda Prompt, go to the pc-tidy folder and run python pc_tidy.py"
         elif row["id"] == "installers" and cfg.key_errors("cleanup", "installer_folders", "installers_min_age_days"):
+            why = "settings.ini has a mistake in [cleanup] (python pc_tidy.py settings check)"
+        elif row["id"] in ("temp-user", "temp-windows") and cfg.key_errors("cleanup", "temp_min_age_days"):
             why = "settings.ini has a mistake in [cleanup] (python pc_tidy.py settings check)"
         out[row["id"]] = why
     return out
@@ -234,6 +244,7 @@ class DryRun:
         self.moves = None
         self.refused = []          # (path, why)
         self.by_fix = collections.defaultdict(list)
+        self.young = collections.Counter()      # fix id: items left out for being too new
         moves = []
         for row in rows:
             a = row["action"]
@@ -251,6 +262,7 @@ class DryRun:
             for action in self.deletes.actions[start:]:
                 action["fix"] = row["id"]
                 self.by_fix[row["id"]].append(action)
+        self._pin_kept_copies()
         if moves and move_dest:
             import move_off_c
             fix_of = {os.path.abspath(m["path"]): m["fix"] for m in moves}
@@ -280,6 +292,27 @@ class DryRun:
             if action is not None:
                 action["keep"], action["keep_fp"] = keep, fingerprint(keep)
 
+    def _pin_kept_copies(self):
+        """The copy that stays of a duplicate is never deleted by another fix in the same run, so an
+        extra copy can't go together with the copy that was meant to stay (problem 21)."""
+        kept = {a["keep"]: a["path"] for a in self.deletes.actions if a.get("keep")}
+        if not kept:
+            return
+        drop = []
+        for a in self.deletes.actions:
+            if a["op"] not in ("delete", "delete_tree") or a.get("keep"):
+                continue
+            hit = next((k for k in kept if inside(k, a["path"])), None)
+            if hit:
+                drop.append(a)
+                self.refused.append((a["path"], f"{'it is' if inside(a['path'], hit) else 'it holds'} the copy "
+                                                f"that stays of {kept[hit]}"))
+        if drop:
+            gone = {id(a) for a in drop}
+            self.deletes.actions = [a for a in self.deletes.actions if id(a) not in gone]
+            for fix in self.by_fix:
+                self.by_fix[fix] = [a for a in self.by_fix[fix] if id(a) not in gone]
+
     def _deletes(self, row, a):
         if a["delete"] == "duplicates":
             return self._duplicates(a["pairs"])
@@ -288,6 +321,7 @@ class DryRun:
             from . import fixes
             fresh = fixes.installers_fix(self.ctx, self.cfg)
             places = fresh.action["places"] if fresh else []
+        days = a.get("min_age_days", 0)
         for place in places:
             if a["delete"] == "contents":
                 try:
@@ -295,7 +329,10 @@ class DryRun:
                 except OSError:
                     continue
                 for name in names:
-                    self._add(os.path.join(place, name))
+                    if old_enough(os.path.join(place, name), days):
+                        self._add(os.path.join(place, name))
+                    else:
+                        self.young[row["id"]] += 1
             elif a["delete"] == "patterns":
                 for path in expand(place):
                     if os.path.isfile(path):
@@ -321,8 +358,10 @@ class DryRun:
         """Lines saying exactly what this fix will do."""
         acts = self.by_fix.get(row["id"], [])
         head = f"  {row['n']:>2}  {row['title']}"
+        young = self.young.get(row["id"])
+        stay = [f"        ({young:,} newer item{'s' if young != 1 else ''} stay)"] if young else []
         if not acts:
-            return [f"{head}: nothing to do any more"]
+            return [f"{head}: nothing to do any more"] + stay
         a = acts[0]
         if a["op"] == "run_tool":
             tool = executor.TOOLS[a["tool"]]
@@ -340,7 +379,7 @@ class DryRun:
                   for x in acts[:SHOW_ITEMS]]
         if len(acts) > SHOW_ITEMS:
             lines.append(f"        ... and {len(acts) - SHOW_ITEMS:,} more")
-        return lines
+        return lines + stay
 
     def text(self):
         lines = [f"pc-tidy dry run {self.deletes.id}, {time.strftime('%Y-%m-%d %H:%M')}. Nothing has changed yet.", ""]
@@ -374,7 +413,8 @@ class DryRun:
 def plan_settings(cfg):
     """What the deletes plan was built under: the executor refuses it if these change before the yes."""
     return {"installer_folders": cfg.value("cleanup", "installer_folders"),
-            "installers_min_age_days": cfg.value("cleanup", "installers_min_age_days")}
+            "installers_min_age_days": cfg.value("cleanup", "installers_min_age_days"),
+            "temp_min_age_days": cfg.value("cleanup", "temp_min_age_days")}
 
 
 def confirm_high(dry, ask=ui.ask):
@@ -417,6 +457,9 @@ def free_space(ctx, cfg, data):
     if dry.empty:
         print("There is nothing left to do: everything picked is already gone.")
         return 0
+    if dry.moves and dry.moves.actions:
+        import move_off_c
+        print(move_off_c.BACKUP_NOTE)
     return confirm_and_run(ctx, dry, listing)
 
 

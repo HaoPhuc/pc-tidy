@@ -201,7 +201,7 @@ def full_c(test_volumes, write_guard, tmp_path):
     write(home / "Videos" / "Lectures" / "notes.txt", b"week 1")
     write(home / "Videos" / "clip.mp4", b"c" * (MB // 2))
     for i in range(20):
-        write(home / "AppData" / "Local" / "Temp" / f"cache{i:02}.tmp", bytes([i]) * MB)
+        write(home / "AppData" / "Local" / "Temp" / f"cache{i:02}.tmp", bytes([i]) * MB, age_days=30)
     fill_volume(root / "filler")
     try:
         yield FullC(root, home, Runner(home, tmp_path, [tmp_path, vol.root]))

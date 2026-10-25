@@ -12,6 +12,7 @@ CI runs every test on windows-latest, which is a Windows Server image. It runs a
 ## Windows rights
 - [ ] An administrator account, normal window: the Windows rows say "needs an administrator window". *Run as administrator* on `pc-tidy.cmd` measures and cleans them.
 - [ ] A standard account: the same rows say so, and nothing asks for a password unexpectedly.
+- [ ] A standard account, *Run as administrator* on `pc-tidy.cmd` with an administrator's password: it says it runs as the other account, and only the Windows rows can be picked. `.\cleanup.ps1` the same way cleans only the Windows folders.
 - [ ] `.\cleanup.ps1` in an administrator PowerShell, with `recycle_bin = yes` and a test folder in `extra_paths_to_delete`: the exact list comes first, each of those two asks a second time, Enter at the second question leaves it out, and the summary shows C: before and after.
 
 ## OneDrive
@@ -34,6 +35,9 @@ CI runs every test on windows-latest, which is a Windows Server image. It runs a
   - [ ] with an uninstaller left open
   - [ ] with an interrupted move left undecided (a notice appears at the next start)
 - [ ] Kill the process during a move to another drive. `python pc_tidy.py recover`, then `python move_off_c.py --undo`, put everything back.
+- [ ] A video playing from a folder you move to another drive: the move is skipped before anything is copied, naming the file.
+- [ ] Outlook with a `.pst` in Documents: that folder isn't offered as a move, and the tips say why.
+- [ ] A document opened from a ZIP in Explorer, edited and saved: the Temp fix leaves it alone for 7 days.
 
 ## Last-access times
 - [ ] On a PC where `fsutil behavior query disablelastaccess` says updates are on: give a duplicate a last-access date a year back, run the report, and check that the date hasn't changed.

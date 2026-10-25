@@ -40,6 +40,13 @@ KNOWN_FOLDERS = ["Documents", "Pictures", "Videos", "Music", "Downloads", "Deskt
 SKIP_IN_HOME = re.compile(
     r"^(appdata|\..*|onedrive.*|dropbox|google drive|icloud ?drive|(ana|mini)conda3?|saved games|contacts|"
     r"favorites|links|searches|3d objects|ntuser.*|sorted)$", re.I)
+# folders inside Documents (and the other user folders) where apps keep their own files: the app
+# breaks, or loses its data, when one is moved by hand (problem 26)
+APP_FOLDERS = re.compile(r"^(outlook files|my games|windowspowershell|powershell|visual studio( \d+| code)?|"
+                         r"my web sites|iisexpress|custom office templates|zoom)$", re.I)
+OUTLOOK_FILES = (".pst", ".ost")          # Outlook's mail, which Outlook keeps open
+BACKUP_NOTE = ("Moved files are no longer covered by File History or Windows Backup of your user folders, "
+               "unless you back up the other drive too.")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
@@ -67,6 +74,32 @@ def other_drive():
     return os.path.dirname(dest) if dest else None
 
 
+def app_owned(path):
+    """Why a folder or file belongs to an app that breaks when it is moved by hand, or None."""
+    name = os.path.basename(path.rstrip("\\/"))
+    if APP_FOLDERS.match(name):
+        return f"{name} is where an app keeps its own files, and the app breaks if it is moved by hand"
+    if name.lower().endswith(OUTLOOK_FILES) or (os.path.isdir(path) and _holds(path, OUTLOOK_FILES)):
+        return "it holds Outlook's mail files (.pst or .ost). Move them in Outlook: File > Account Settings > Data Files"
+    return None
+
+
+def _holds(folder, extensions):
+    """True if a file with one of these extensions is anywhere below the folder (links not followed)."""
+    stack = [folder]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for e in entries:
+            if e.is_dir(follow_symlinks=False):
+                stack.append(e.path)
+            elif e.name.lower().endswith(extensions):
+                return True
+    return False
+
+
 def move_candidates(scan, home, min_bytes=None):
     """Personal folders and big files in your profile that are safe to move, biggest first."""
     min_bytes = options().min_gb * GB if min_bytes is None else min_bytes
@@ -76,12 +109,12 @@ def move_candidates(scan, home, min_bytes=None):
         if norm(top) in known:
             for sub in scan.children.get(top, []):
                 sub_name = os.path.basename(sub)
-                if scan.sizes.get(sub, 0) >= min_bytes and not sub_name.startswith("."):
+                if scan.sizes.get(sub, 0) >= min_bytes and not sub_name.startswith(".") and not app_owned(sub):
                     out.append({"path": sub, "size": scan.sizes[sub], "kind": "folder"})
-        elif scan.sizes.get(top, 0) >= min_bytes and not SKIP_IN_HOME.match(name):
+        elif scan.sizes.get(top, 0) >= min_bytes and not SKIP_IN_HOME.match(name) and not app_owned(top):
             out.append({"path": top, "size": scan.sizes[top], "kind": "folder"})
     for size, path in scan.files_over:
-        if size >= min_bytes and norm(os.path.dirname(path)) in known:
+        if size >= min_bytes and norm(os.path.dirname(path)) in known and not app_owned(path):
             out.append({"path": path, "size": size, "kind": "file"})
     return sorted(out, key=lambda c: -c["size"])
 
@@ -103,6 +136,11 @@ def move_tips(scan, home, min_bytes=None):
         if re.match(r"onedrive", os.path.basename(top), re.I) and scan.sizes.get(top, 0) >= min_bytes:
             tips.append(f"{os.path.basename(top)} uses {scan.sizes[top] / GB:.0f} GB on C:. Right-click folders "
                         "> 'Free up space' to keep them online-only instead of moving them.")
+    for k in KNOWN_FOLDERS:
+        for sub in scan.children.get(os.path.join(home, k), []):
+            reason = scan.sizes.get(sub, 0) >= min_bytes and app_owned(sub)
+            if reason:
+                tips.append(f"{sub} ({scan.sizes[sub] / GB:.1f} GB) isn't offered: {reason}.")
     return tips
 
 
@@ -121,6 +159,13 @@ def blocked(path, home, ctx=None):
     first = p[len(h) + 1:].split("/")[0]
     if SKIP_IN_HOME.match(first):
         return "it holds app data or synced files that break when moved by hand"
+    parts = os.path.relpath(os.path.abspath(path), home).split(os.sep)
+    for i, part in enumerate(parts):          # the item, or a folder it is in
+        if APP_FOLDERS.match(part):
+            return app_owned(os.path.join(home, *parts[:i + 1]))
+    reason = app_owned(path)
+    if reason:
+        return reason
     return safety.why_refused(path, "move", ctx)
 
 
@@ -328,6 +373,7 @@ def main():
     print(f"\nThis moves {len(plan.actions)} item(s), {total / GB:.1f} GB, to {dest_root}:")
     for a in plan.actions:
         print(f"  {a['src']}  ->  {a['dst']}")
+    print(BACKUP_NOTE)
     plan.save_copy()
     if not ui.ask_yes("Type yes to continue: "):
         print("Cancelled, nothing moved.")

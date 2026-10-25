@@ -71,7 +71,7 @@ def test_the_dry_run_lists_every_item_and_changes_nothing(run, profile):
         assert f"        {path}" in out, out
     assert str(profile / "Downloads" / "setup.exe") not in out      # 1 day old: installers_min_age_days = 7
     assert "Recycle Bin" not in out                                  # off unless you switch it on
-    assert "Left out Windows Temp files: not in the tests" in out
+    assert "Left out Windows Temp files older than 7 days: not in the tests" in out
     assert "Dry run done. Nothing was changed." in out
     assert user_files(profile) == before
 
@@ -80,7 +80,7 @@ def test_yes_removes_exactly_the_list(run, profile):
     pip, dump = caches(profile)
     temp = profile / "AppData" / "Local" / "Temp"
 
-    result = run.python("pc_tidy.py", "cleanup", input="yes\n")
+    result = run.python("pc_tidy.py", "cleanup", input="yes\nyes\n")      # installers are high risk: asked twice
 
     assert result.returncode == 0, result.output
     assert not any(p.exists() for p in (pip, dump, temp / "tmp1.tmp", profile / "Downloads" / "old-setup.msi"))
@@ -105,7 +105,7 @@ def test_anything_but_yes_changes_nothing(run, profile, typed):
 
 def test_a_file_added_or_changed_after_the_dry_run_survives(run, profile):
     temp = profile / "AppData" / "Local" / "Temp"
-    listed = [write(temp / f"cache{i}.tmp", b"c" * 100) for i in range(3)]
+    listed = [write(temp / f"cache{i}.tmp", b"c" * 100, age_days=10) for i in range(3)]
     started = run.start("pc_tidy.py", "cleanup")
     started.wait_for("Type yes to do all of this")
     added = write(temp / "new.tmp", b"downloading")
@@ -189,7 +189,7 @@ def test_with_everything_switched_off(run, tmp_path):
 # ---------- in this process, with stand-ins for what would act on this PC ----------
 def test_the_windows_folders_lose_only_what_the_safety_table_allows(monkeypatch, tmp_path, profile, capsys):
     windows = tmp_path / "Windows"
-    gone = [write(windows / "Temp" / "setup.log"), write(windows / "Minidump" / "a.dmp"), write(windows / "MEMORY.DMP"),
+    gone = [write(windows / "Temp" / "setup.log", age_days=10), write(windows / "Minidump" / "a.dmp"), write(windows / "MEMORY.DMP"),
             write(windows / "LiveKernelReports" / "WATCHDOG" / "w.dmp")]
     kept = [write(windows / "notepad.exe"), write(windows / "Minidump" / "notes.txt"), windows / "Temp"]
     cleanup_settings(tmp_path, switches_on={"temp_files", "crash_dumps"})

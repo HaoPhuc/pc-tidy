@@ -75,6 +75,9 @@ if ON_WINDOWS:
     _declare(advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW, _B, _S, _D, ctypes.POINTER(_P), _PD)
     _declare(kernel32.GetCompressedFileSizeW, _D, _S, _PD)
     _declare(kernel32.SetFileTime, _B, _H, _P, _P, _P)
+    _declare(kernel32.GetCurrentProcessId, _D)
+    _declare(kernel32.ProcessIdToSessionId, _B, _D, _PD)
+    _declare(advapi32.LookupAccountSidW, _B, _S, _P, _WS, _PD, _WS, _PD, _PD)
 
 
 def _error(what):
@@ -219,6 +222,16 @@ def open_untouched(path):
     return os.fdopen(fd, "rb")
 
 
+def open_elsewhere(path):
+    """True if another program has the file open, so it can't be moved whole: opening it with no
+    sharing at all fails with a sharing violation then. Nothing is read, so its last-access time stays."""
+    handle = kernel32.CreateFileW(long_path(path), _GENERIC_READ, 0, None, _OPEN_EXISTING, 0, None)
+    if handle == INVALID_HANDLE_VALUE:
+        return ctypes.get_last_error() in (ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION)
+    kernel32.CloseHandle(handle)
+    return False
+
+
 def last_access_recorded():
     """True if Windows records when files are opened (the lowest bit of NtfsDisableLastAccessUpdate
     is 0, as 'fsutil behavior query disablelastaccess' shows). False if it doesn't or can't be read."""
@@ -327,6 +340,44 @@ def is_elevated():
         return bool(ctypes.cast(_token_info(_TOKEN_ELEVATION), ctypes.POINTER(wintypes.DWORD))[0])
     except OSError:
         return False
+
+
+def process_user():
+    """'DOMAIN\\name' of the account this process runs as, or None if it can't be read."""
+    try:
+        buf = _token_info(_TOKEN_USER)
+    except OSError:
+        return None
+    psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+    name, domain = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+    n, d, kind = wintypes.DWORD(256), wintypes.DWORD(256), wintypes.DWORD()
+    if not advapi32.LookupAccountSidW(None, psid, name, ctypes.byref(n), domain, ctypes.byref(d), ctypes.byref(kind)):
+        return None
+    return f"{domain.value}\\{name.value}"
+
+
+def session_user():
+    """'DOMAIN\\name' of the person signed in to the session this window is in (at the screen, or
+    through Remote Desktop), or None: nobody (a scheduled task), or it can't be read. Run as
+    administrator with another account's password, this process runs as that account in the same
+    session, so the two differ."""
+    session = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session)):
+        return None
+    wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    _declare(wts.WTSQuerySessionInformationW, _B, _H, _D, ctypes.c_int, ctypes.POINTER(_WS), _PD)
+    _declare(wts.WTSFreeMemory, None, _P)
+
+    def query(kind):
+        out, size = _WS(), wintypes.DWORD()
+        if not wts.WTSQuerySessionInformationW(None, session.value, kind, ctypes.byref(out), ctypes.byref(size)):
+            return ""
+        try:
+            return out.value or ""
+        finally:
+            wts.WTSFreeMemory(ctypes.cast(out, ctypes.c_void_p))
+    user, domain = query(5), query(7)          # WTSUserName, WTSDomainName
+    return f"{domain}\\{user}" if user else None
 
 
 class SecurityAttributes(ctypes.Structure):

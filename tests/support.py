@@ -43,12 +43,41 @@ def free_letter():
 
 
 def write(path, data=b"x", age_days=1.0):
-    """Create a file (and its folders) and set its modified time age_days back."""
+    """Create a file (and its folders) and set when it was created, changed and opened age_days back."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
-    t = time.time() - age_days * DAY
-    os.utime(path, (t, t))
+    return age(path, age_days)
+
+
+def age(path, days):
+    """Set when a file, a folder or a link itself (never what it points at) was created, changed and
+    opened to `days` ago. os.utime can't set the creation time, which the Temp fixes count too: a
+    file unpacked or copied there keeps its old modified time but is created now."""
+    from ctypes import wintypes as w
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = w.HANDLE
+    k32.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE]
+    k32.SetFileTime.argtypes = [w.HANDLE, w.LPVOID, w.LPVOID, w.LPVOID]
+    k32.CloseHandle.argtypes = [w.HANDLE]
+    when = ctypes.c_ulonglong(int((time.time() - days * DAY) * 10_000_000) + 116444736000000000)   # a FILETIME
+    # FILE_WRITE_ATTRIBUTES, share all, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+    handle = k32.CreateFileW(long(path), 0x100, 0x7, None, 3, 0x02000000 | 0x00200000, None)
+    if handle == w.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not k32.SetFileTime(handle, ctypes.byref(when), ctypes.byref(when), ctypes.byref(when)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        k32.CloseHandle(handle)
     return path
+
+
+def age_tree(folder, days):
+    """age() for a folder and everything in it, contents first (writing into a folder changes its time)."""
+    for dirpath, dirs, files in os.walk(long(folder), topdown=False):
+        for name in files + dirs:
+            age(os.path.join(dirpath, name), days)
+    return age(folder, days)
 
 
 def set_hidden(path):
@@ -99,9 +128,10 @@ def make_fake_profile(base, big_cache=False):
 
     set_hidden(home / "AppData")      # as in a real profile
     local = home / "AppData" / "Local"
-    write(local / "Temp" / "tmp1.tmp", b"t" * 100)
+    write(local / "Temp" / "tmp1.tmp", b"t" * 100, age_days=30)       # old enough for the Temp fix
     precious = write(home / "Precious" / "keep.txt", b"k" * 1000).parent
     make_junction(local / "Temp" / "link-to-precious", precious)
+    age(local / "Temp" / "link-to-precious", 30)
     if big_cache:
         big = local / "pip" / "cache" / "wheels.bin"
         big.parent.mkdir(parents=True)

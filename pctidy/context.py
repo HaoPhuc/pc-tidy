@@ -127,6 +127,21 @@ class Context:
                 return folder
         return None
 
+    def other_account(self):
+        """(this window's account, the signed-in person's) when they differ, else None. Run as
+        administrator with someone else's password, pc-tidy runs as that account, so the profile,
+        Temp and Downloads it sees aren't the person's at the screen (problem 23). In the test
+        sandbox only PCTIDY_TEST_SESSION_USER stands in for the signed-in person."""
+        if not hasattr(self, "_other"):
+            from . import _win
+            if self.sandbox:
+                session = self.test_value("PCTIDY_TEST_SESSION_USER")
+                me = _win.process_user() if session else None
+            else:
+                session, me = (_win.session_user(), _win.process_user()) if os.name == "nt" else (None, None)
+            self._other = (me, session) if session and me and session.lower() != me.lower() else None
+        return self._other
+
     # ---------- the test sandbox ----------
     def in_sandbox(self, path):
         return any(inside(path, root) for root in self.sandbox)
